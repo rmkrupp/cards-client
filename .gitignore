@@ -1,0 +1,12 @@
+cards-client
+cards-client.exe
+build.ninja
+/test/
+/tools/
+/out/
+__pycache__
+*.db
+*.ignore
+*.ignore.*
+*.gen
+*.gen.*
