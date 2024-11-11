@@ -134,6 +134,9 @@ static size_t random_level()
 
 /* add this key of length to the sorted set, associating it with data
  *
+ * if length is zero, the key must be null terminated and its length is
+ * calculated automatically.
+ *
  * if the key is added (i.e. if it is not a duplicate of a key currently in the
  * set), the sorted_set takes ownership of this memory. do not free it after
  * calling this function, unless the memory is extracted via an
@@ -155,6 +158,10 @@ enum sorted_set_add_key_result sorted_set_add_key(
         void * data
     ) [[gnu::nonnull(1, 2)]]
 {
+    if (length == 0) {
+        length = strlen(key);
+    }
+
     /* pick a random height for the new nodde */
     size_t new_level = random_level();
 
@@ -270,6 +277,22 @@ void sorted_set_add_keys_copy(
                 length,
                 data ? data[i] : NULL
             );
+    }
+}
+
+/* like sorted_set_add_key, but make a copy of the key first */
+enum sorted_set_add_key_result sorted_set_add_key_copy(
+        struct sorted_set * sorted_set,
+        const char * key,
+        size_t length,
+        void * data
+    ) [[gnu::nonnull(1, 2)]]
+{
+    if (length) {
+        return sorted_set_add_key(
+                sorted_set, strndup(key, length), length, data);
+    } else {
+        return sorted_set_add_key(sorted_set, strdup(key), length, data);
     }
 }
 
@@ -471,6 +494,43 @@ void * sorted_set_remove_key(
         *n_keys_out = sorted_set->size;
     }
     return keys;
+}
+
+/* returns the set difference a \ b as a new sorted_set */
+[[nodiscard]] struct sorted_set * sorted_set_difference(
+        const struct sorted_set * a,
+        const struct sorted_set * b
+    ) [[gnu::nonnull(1, 2)]]
+{
+    struct node * a_node = a->next[0],
+                * b_node = b->next[0];
+
+    struct sorted_set * out = sorted_set_create();
+
+    while (a_node && b_node) {
+        int result = key_compare(a_node, b_node) == 0;
+        if (result == 0) {
+            /* in a and b, not in result */
+            a_node = a_node->next[0];
+            b_node = b_node->next[0];
+        } else if (result < 0) {
+            /* in a and not in b, in result */
+            sorted_set_add_key_copy(
+                    out, a_node->key, a_node->length, a_node->data);
+        } else {
+            /* potentially in b, look at next b node */
+            b_node = b_node->next[0];
+        }
+    }
+
+    while (a_node) {
+        /* the remaining a nodes are all in result */
+        sorted_set_add_key_copy(
+                out, a_node->key, a_node->length, a_node->data);
+        a_node = a_node->next[0];
+    }
+
+    return out;
 }
 
 /* a sorted_set_maker

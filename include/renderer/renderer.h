@@ -1,4 +1,4 @@
-/* File: src/main.c
+/* File: include/renderer/renderer.h
  * Part of cards-client <github.com/rmkrupp/cards-client>
  *
  * Copyright (C) 2024 Noah Santer <n.ed.santer@gmail.com>
@@ -17,22 +17,29 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+#ifndef RENDERER_RENDERER_H
+#define RENDERER_RENDERER_H
 
-#include "renderer/renderer.h"
+enum renderer_init_result {
+    RENDERER_INIT_OKAY,
+    RENDERER_INIT_ERROR
+};
 
-#include <stdio.h>
+/* call this once per program to initialize the renderer
+ *
+ * after it has been called, renderer_terminate() must be called when the
+ * program ends
+ */
+enum renderer_init_result renderer_init();
 
-int main(int argc, char ** argv)
-{
-    (void)argc;
-    (void)argv;
+/* call this after renderer_init() before the program ends
+ *
+ * it is safe to call this repeatedly, and no matter the reutrn value of
+ * init()
+ */
+void renderer_terminate();
 
-    if (renderer_init()) {
-        return 1;
-    }
+/* enter the event loop */
+void renderer_loop();
 
-    renderer_loop();
-
-    renderer_terminate();
-    return 0;
-}
+#endif /* RENDERER_RENDERER_H */

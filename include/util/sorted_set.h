@@ -57,6 +57,9 @@ enum sorted_set_add_key_result {
 
 /* add this key of length to the sorted set, associating it with data
  *
+ * if length is zero, the key must be null terminated and its length is
+ * calculated automatically.
+ *
  * if the key is added (i.e. if it is not a duplicate of a key currently in the
  * set), the sorted_set takes ownership of this memory. do not free it after
  * calling this function, unless the memory is extracted via an
@@ -157,6 +160,20 @@ void sorted_set_add_keys_copy(
         size_t * lengths,
         void ** data,
         size_t n_keys
+    ) [[gnu::nonnull(1, 2)]];
+
+/* like sorted_set_add_key but make a copy of key */
+enum sorted_set_add_key_result sorted_set_add_key_copy(
+        struct sorted_set * sorted_set,
+        const char * key,
+        size_t length,
+        void * data
+    ) [[gnu::nonnull(1, 2)]];
+
+/* returns the set difference a \ b as a new sorted_set */
+[[nodiscard]] struct sorted_set * sorted_set_difference(
+        const struct sorted_set * a,
+        const struct sorted_set * b
     ) [[gnu::nonnull(1, 2)]];
 
 /* a sorted_set_maker

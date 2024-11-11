@@ -293,6 +293,9 @@ w.rule(
 w.build('$builddir/main.o', 'cc', 'src/main.c')
 w.newline()
 
+w.build('$builddir/renderer/renderer.o', 'cc', 'src/renderer/renderer.c')
+w.newline()
+
 w.build('$builddir/util/sorted_set.o', 'cc', 'src/util/sorted_set.c')
 w.build('$builddir/util/strdup.o', 'cc', 'src/util/strdup.c')
 w.newline()
@@ -349,9 +352,10 @@ bin_target(
         name = 'cards-client',
         inputs = [
             '$builddir/main.o',
-            '$builddir/libs/quat/quat.o',
+            '$builddir/renderer/renderer.o',
             '$builddir/util/sorted_set.o',
-            '$builddir/util/strdup.o'
+            '$builddir/util/strdup.o',
+            '$builddir/libs/quat/quat.o'
         ],
         variables = [
             ('libs', '-lm -lglfw -lvulkan')
