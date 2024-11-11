@@ -199,7 +199,10 @@ else:
 # INCLUDES
 #
 
-w.variable(key = 'includes', value = '-Iinclude -Ilibs/quat/include')
+w.variable(
+        key = 'includes',
+        value = '-Iinclude -Ilibs/quat/include'
+    )
 w.newline()
 
 #
@@ -278,11 +281,20 @@ w.rule(
     )
 w.newline()
 
+w.rule(
+        name = 'run-generator',
+        command = './$in'
+    )
+
 #
 # SOURCES
 #
 
 w.build('$builddir/main.o', 'cc', 'src/main.c')
+w.newline()
+
+w.build('$builddir/util/sorted_set.o', 'cc', 'src/util/sorted_set.c')
+w.build('$builddir/util/strdup.o', 'cc', 'src/util/strdup.c')
 w.newline()
 
 w.build('$builddir/libs/quat/quat.o', 'cc', 'libs/quat/src/quat.c')
@@ -337,12 +349,13 @@ bin_target(
         name = 'cards-client',
         inputs = [
             '$builddir/main.o',
-            '$builddir/libs/quat/quat.o'
+            '$builddir/libs/quat/quat.o',
+            '$builddir/util/sorted_set.o',
+            '$builddir/util/strdup.o'
         ],
-        variables = [(
-            'libs',
-            '-lm'
-        )],
+        variables = [
+            ('libs', '-lm -lglfw -lvulkan')
+        ],
         is_disabled = args.disable_client,
         why_disabled = 'we were generated with --disable-client',
         targets = [all_targets]
