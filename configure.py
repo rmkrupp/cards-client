@@ -54,6 +54,7 @@ parser.add_argument('--disable-test-tool', action='append', default=[],
                     help='don\'t build a specific test tool')
 parser.add_argument('--disable-tool', action='append', default=[],
                     choices=[
+                        'generate-dfield'
                     ],
                     help='don\'t build a specific tool')
 parser.add_argument('--disable-client', action='store_true',
@@ -291,6 +292,8 @@ w.rule(
 #
 
 w.build('$builddir/main.o', 'cc', 'src/main.c')
+w.build('$builddir/dfield.o', 'cc', 'src/dfield.c',
+        variables=[('cflags', '$cflags -fopenmp')])
 w.newline()
 
 w.build('$builddir/renderer/renderer.o', 'cc', 'src/renderer/renderer.c')
@@ -298,6 +301,15 @@ w.newline()
 
 w.build('$builddir/util/sorted_set.o', 'cc', 'src/util/sorted_set.c')
 w.build('$builddir/util/strdup.o', 'cc', 'src/util/strdup.c')
+w.newline()
+
+w.build('$builddir/tools/generate-dfield/generate-dfield.o', 'cc',
+        'src/tools/generate-dfield/generate-dfield.c')
+w.build('$builddir/tools/generate-dfield/args_argp.o', 'cc',
+        'src/tools/generate-dfield/args_argp.c',
+        variables=[('cflags', '$cflags -Wno-missing-field-initializers')])
+w.build('$builddir/tools/generate-dfield/args_getopt.o', 'cc',
+        'src/tools/generate-dfield/args_getopt.c')
 w.newline()
 
 w.build('$builddir/libs/quat/quat.o', 'cc', 'libs/quat/src/quat.c')
@@ -362,6 +374,27 @@ bin_target(
         ],
         is_disabled = args.disable_client,
         why_disabled = 'we were generated with --disable-client',
+        targets = [all_targets]
+    )
+
+bin_target(
+        name = 'tools/generate-dfield',
+        inputs = [
+            '$builddir/tools/generate-dfield/generate-dfield.o',
+            '$builddir/dfield.o',
+            '$builddir/util/strdup.o'
+        ],
+        argp_inputs = [
+            '$builddir/tools/generate-dfield/args_argp.o'
+        ],
+        getopt_inputs = [
+            '$builddir/tools/generate-dfield/args_getopt.o'
+        ],
+        variables = [
+            ('libs', '-lm -fopenmp')
+        ],
+        is_disabled = 'generate-dfield' in args.disable_tool,
+        why_disabled = 'we were generated with --disable-tool=generate-dfield',
         targets = [all_targets]
     )
 
