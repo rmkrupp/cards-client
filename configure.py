@@ -287,9 +287,13 @@ w.rule(
 w.newline()
 
 w.rule(
-        name = 'run-generator',
-        command = './$in'
+        name = 'glslc',
+        deps = 'gcc',
+        depfile = '$out.d',
+        command = 'glslc -MD -MF $out.d $glsldefines -fshader-stage=$stage ' +
+                  '$glslflags $in -o $out'
     )
+w.newline()
 
 #
 # SOURCES
@@ -319,6 +323,12 @@ w.newline()
 w.build('$builddir/libs/quat/quat.o', 'cc', 'libs/quat/src/quat.c')
 w.newline()
 
+w.build('$builddir/out/shaders/vertex.spv', 'glslc',
+        'src/shaders/vertex.glsl', variables=[('stage', 'vertex')])
+w.build('$builddir/out/shaders/fragment.spv', 'glslc',
+        'src/shaders/fragment.glsl', variables=[('stage', 'fragment')])
+w.newline()
+
 #
 # OUTPUTS
 #
@@ -328,6 +338,7 @@ tools_targets = []
 
 def bin_target(name,
                inputs,
+               implicit_inputs=[],
                argp_inputs=[],
                getopt_inputs=[],
                targets=[],
@@ -351,7 +362,13 @@ def bin_target(name,
 
         for group in targets:
             group += [fullname]
-        w.build(fullname, 'bin', inputs, variables=variables)
+        w.build(
+                fullname,
+                'bin',
+                inputs,
+                implicit=implicit_inputs,
+                variables=variables
+            )
     else:
         if sum([1 for disabled in is_disabled if disabled]) > 1:
             w.comment(fullname + ' is disabled because:')
@@ -372,6 +389,10 @@ bin_target(
             '$builddir/util/sorted_set.o',
             '$builddir/util/strdup.o',
             '$builddir/libs/quat/quat.o'
+        ],
+        implicit_inputs = [
+            '$builddir/out/shaders/vertex.spv',
+            '$builddir/out/shaders/fragment.spv'
         ],
         variables = [
             ('libs', '-lm -lvulkan $glfw $mwindows')
