@@ -83,6 +83,7 @@ def exesuffix(root, enabled):
 def enable_debug():
     w.variable(key = 'std', value = '-std=gnu23')
     w.variable(key = 'cflags', value = '$cflags $sanflags -g -Og')
+    w.variable(key = 'glfw', value = '-lglfw')
     if not args.force_version:
         w.variable(key = 'version', value = '"$version"-debug')
     else:
@@ -95,6 +96,7 @@ def enable_release():
         w.variable(key = 'cflags', value = '$cflags -O3')
     else:
         w.variable(key = 'cflags', value = '$cflags -O2')
+    w.variable(key = 'glfw', value = '-lglfw')
     w.variable(key = 'defines', value = '$defines -DNDEBUG')
 
 def enable_w64():
@@ -104,6 +106,8 @@ def enable_w64():
     w.variable(key = 'w64netlibs', value = '-lws2_32 -liphlpapi')
     w.variable(key = 'w64iconv', value = '-liconv')
     w.variable(key = 'w64curses', value = '-lcurses')
+    w.variable(key = 'glfw', value = '-lglfw3')
+    w.variable(key = 'mwindows', value = '-mwindows')
     w.variable(key = 'ldflags', value = '$ldflags -L/usr/x86_64-w64-mingw32/lib')
     w.variable(key = 'defines', value = '$defines -DNDEBUG')
 
@@ -370,7 +374,7 @@ bin_target(
             '$builddir/libs/quat/quat.o'
         ],
         variables = [
-            ('libs', '-lm -lglfw -lvulkan')
+            ('libs', '-lm -lvulkan $glfw $mwindows')
         ],
         is_disabled = args.disable_client,
         why_disabled = 'we were generated with --disable-client',
