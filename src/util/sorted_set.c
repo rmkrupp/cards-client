@@ -290,7 +290,7 @@ enum sorted_set_add_key_result sorted_set_add_key_copy(
 {
     if (length) {
         return sorted_set_add_key(
-                sorted_set, strndup(key, length), length, data);
+                sorted_set, util_strndup(key, length), length, data);
     } else {
         return sorted_set_add_key(sorted_set, strdup(key), length, data);
     }
