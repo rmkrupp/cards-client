@@ -61,15 +61,18 @@ struct renderer {
     struct swap_chain_details {
         VkSurfaceCapabilitiesKHR capabilities;
         VkSurfaceFormatKHR * formats;
-        VkSurfaceFormatKHR format;
+        VkSurfaceFormatKHR format; /* the format we picked */
         uint32_t  n_formats;
         VkPresentModeKHR * present_modes;
-        VkPresentModeKHR present_mode;
+        VkPresentModeKHR present_mode; /* the present mode we picked */
         uint32_t n_present_modes;
         VkExtent2D extent;
     } chain_details; /* information about the swap chain */
 
     VkSwapchainKHR swap_chain;
+    VkImage * swap_chain_images;
+    uint32_t n_swap_chain_images;
+    VkImageView * swap_chain_image_views;
 
 } renderer = { };
 
@@ -379,6 +382,22 @@ static enum renderer_init_result setup_swap_chain()
         return RENDERER_INIT_ERROR;
     }
 
+    vkGetSwapchainImagesKHR(
+            renderer.device,
+            renderer.swap_chain,
+            &renderer.n_swap_chain_images,
+            NULL
+        );
+    renderer.swap_chain_images = malloc(
+            sizeof(*renderer.swap_chain_images) *
+            renderer.n_swap_chain_images);
+    vkGetSwapchainImagesKHR(
+            renderer.device,
+            renderer.swap_chain,
+            &renderer.n_swap_chain_images,
+            renderer.swap_chain_images
+        );
+
     return RENDERER_INIT_OKAY;
 }
 
@@ -611,6 +630,51 @@ static enum renderer_init_result setup_logical_device()
     return RENDERER_INIT_OKAY;
 }
 
+/* create image views for every image in the swap chain */
+static enum renderer_init_result setup_image_views()
+{
+    renderer.swap_chain_image_views = calloc(
+            renderer.n_swap_chain_images,
+            sizeof(*renderer.swap_chain_images)
+        );
+
+    for (uint32_t i = 0; i < renderer.n_swap_chain_images; i++) {
+        VkImageViewCreateInfo create_info = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = renderer.swap_chain_images[i],
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = renderer.chain_details.format.format,
+            .components = {
+                .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .a = VK_COMPONENT_SWIZZLE_IDENTITY
+            },
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1
+            }
+        };
+
+        VkResult result = vkCreateImageView(
+                renderer.device,
+                &create_info,
+                NULL,
+                &renderer.swap_chain_image_views[i]
+            );
+
+        if (result != VK_SUCCESS) {
+            fprintf(stderr, "[renderer] vkCreateImageView failed\n");
+            renderer_terminate();
+            return RENDERER_INIT_ERROR;
+        }
+    }
+
+    return RENDERER_INIT_OKAY;
+}
 
 /* initialize the renderer */
 enum renderer_init_result renderer_init()
@@ -635,6 +699,9 @@ enum renderer_init_result renderer_init()
     result = setup_swap_chain();
     if (result) return result;
 
+    result = setup_image_views();
+    if (result) return result;
+
     renderer.initialized = true;
 
     return RENDERER_INIT_OKAY;
@@ -645,6 +712,19 @@ void renderer_terminate()
     renderer.initialized = false;
 
     if (renderer.swap_chain) {
+        for (uint32_t i = 0; i < renderer.n_swap_chain_images; i++) {
+            if (renderer.swap_chain_image_views[i]) {
+                vkDestroyImageView(
+                        renderer.device,
+                        renderer.swap_chain_image_views[i],
+                        NULL
+                    );
+                renderer.swap_chain_image_views[i] = NULL;
+            }
+        }
+        free(renderer.swap_chain_images);
+        free(renderer.swap_chain_image_views);
+
         vkDestroySwapchainKHR(renderer.device, renderer.swap_chain, NULL);
         renderer.swap_chain = NULL;
     }
