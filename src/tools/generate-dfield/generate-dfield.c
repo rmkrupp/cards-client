@@ -41,16 +41,19 @@ int main(int argc, char ** argv)
 
     if (args.input_width == 0 || args.input_height == 0) {
         fprintf(stderr, "input size not specified (no default)\n");
+        free_args(&args);
         return 1;
     }
 
     if (args.output_width == 0 || args.output_height == 0) {
         fprintf(stderr, "output size not specified (no default)\n");
+        free_args(&args);
         return 1;
     }
 
     if (args.spread == 0) {
         fprintf(stderr, "spread not specified (no default)\n");
+        free_args(&args);
         return 1;
     }
 
@@ -67,6 +70,7 @@ int main(int argc, char ** argv)
                 result,
                 args.input_path
             );
+        free_args(&args);
         return 1;
     }
 
@@ -80,8 +84,12 @@ int main(int argc, char ** argv)
                     args.spread,
                     &dfield))) {
         fprintf(stderr, "error %d generating dfield\n", result);
+        free(data);
+        free_args(&args);
         return 1;
     }
+
+    free(data);
 
     if ((result = dfield_to_file(args.output_path, &dfield))) {
         fprintf(
@@ -90,8 +98,12 @@ int main(int argc, char ** argv)
                 result,
                 args.output_path
             );
+        free(dfield.data);
+        free_args(&args);
         return 1;
     }
 
+    free(dfield.data);
+    free_args(&args);
     return 0;
 }

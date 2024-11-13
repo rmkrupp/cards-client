@@ -128,7 +128,7 @@ int dfield_to_file(
         return 2;
     }
 
-    rd = fwrite(&dfield->data, dfield->width * dfield->height, 1, dfield_file);
+    rd = fwrite(dfield->data, 1, dfield->width * dfield->height, dfield_file);
 
     fclose(dfield_file);
 

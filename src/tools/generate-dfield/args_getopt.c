@@ -17,7 +17,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-#include "tools/cards_compile/args.h"
+#include "tools/generate-dfield/args.h"
 
 #include "util/strdup.h"
 
@@ -131,8 +131,8 @@ int parse_args(
         return 1;
     }
 
-    args->output_name = util_strdup(argv[optind]);
-    args->input_name = util_strdup(argv[optind + 1]);
+    args->output_path = util_strdup(argv[optind]);
+    args->input_path = util_strdup(argv[optind + 1]);
 
     return 0;
 }
