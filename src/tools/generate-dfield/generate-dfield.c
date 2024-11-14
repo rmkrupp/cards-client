@@ -58,7 +58,7 @@ int main(int argc, char ** argv)
     }
 
     uint8_t * data;
-    int result;
+    enum dfield_result result;
     if ((result = dfield_data_from_file(
                 args.input_path,
                 args.input_width,
@@ -66,9 +66,9 @@ int main(int argc, char ** argv)
                 &data))) {
         fprintf(
                 stderr,
-                "error %d reading input data from file %s\n",
-                result,
-                args.input_path
+                "error reading input data from file %s: %s\n",
+                args.input_path,
+                dfield_result_string(result)
             );
         free_args(&args);
         return 1;
@@ -83,7 +83,11 @@ int main(int argc, char ** argv)
                     args.output_height,
                     args.spread,
                     &dfield))) {
-        fprintf(stderr, "error %d generating dfield\n", result);
+        fprintf(
+                stderr,
+                "error generating dfield: %s\n",
+                dfield_result_string(result)
+            );
         free(data);
         free_args(&args);
         return 1;
@@ -94,9 +98,9 @@ int main(int argc, char ** argv)
     if ((result = dfield_to_file(args.output_path, &dfield))) {
         fprintf(
                 stderr,
-                "error %d writing dfield to file %s\n",
-                result,
-                args.output_path
+                "error writing dfield to file %s: %s\n",
+                args.output_path,
+                dfield_result_string(result)
             );
         free(dfield.data);
         free_args(&args);

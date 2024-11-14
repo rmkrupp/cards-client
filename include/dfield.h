@@ -23,24 +23,50 @@
 
 #include <stdint.h>
 
+/* a signed distance field */
 struct dfield {
     int32_t width, height;
     int8_t * data;
 };
 
+/* the result of the operations in this file */
+enum dfield_result {
+    DFIELD_RESULT_OKAY = 0,
+
+    DFIELD_RESULT_ERROR_ERRNO, /* error, check errno */
+    DFIELD_RESULT_ERROR_READ_SIZE, /* bytes read didn't match expected */
+    DFIELD_RESULT_ERROR_MAGIC, /* magic bytes didn't match expected */
+    DFIELD_RESULT_ERROR_BAD_SIZE, /* size fields contained invalid value */
+    DFIELD_RESULT_ERROR_WRITE_SIZE, /* bytes written didn't match expected */
+    
+    DFIELD_RESULT_ERROR_BAD_INPUT_SIZE, /* values passed for input_height or
+                                         * input_width are invalid
+                                         */
+    DFIELD_RESULT_ERROR_BAD_OUTPUT_SIZE, /* values passed for output_height or
+                                          * output_width are invalid
+                                          */
+    DFIELD_RESULT_ERROR_BAD_SPREAD /* value passed for spread is invalid */
+};
+
+/* get a string representation of an error. valid forever unless result is
+ * DFIELD_RESULT_ERRNO, in which case it is valid at least until the next call
+ * to dfield_result_string
+ */
+const char * dfield_result_string(enum dfield_result result);
+
 /* load a dfield from this file and put it in dfield_out
  *
- * returns 0 on success, non-zero on error
+ * returns DFIELD_RESULT_OKAY (0) on success, non-zero on error
  */
-int dfield_from_file(
+enum dfield_result dfield_from_file(
         const char * path, struct dfield * dfield_out) [[gnu::nonnull(1, 2)]];
 
 /* load raw data (of the sort you could pass to dfield_generate) from this file
  * and put it in data_out
  *
- * returns 0 on success, non-zero on error
+ * returns DFIELD_RESULT_OKAY (0) on success, non-zero on error
  */
-int dfield_data_from_file(
+enum dfield_result dfield_data_from_file(
         const char * path,
         int32_t width,
         int32_t height,
@@ -49,19 +75,20 @@ int dfield_data_from_file(
 
 /* write this dfield to this file
  *
- * returns 0 on success, non-zero on error
+ * returns DFIELD_RESULT_OKAY (0) on success, non-zero on error
  */
-int dfield_to_file(
+enum dfield_result dfield_to_file(
         const char * path,
         const struct dfield * dfield
     ) [[gnu::nonnull(1, 2)]];
 
-
 /* using this data (which should be boolean-like black and white data, with
  * 0 treated as black and all other values treated as white) generate a
  * distance field of this size with this spread value
+ *
+ * returns DFIELD_RESULT_OKAY (0) on success, non-zero on error
  */
-[[nodiscard]] int dfield_generate(
+[[nodiscard]] enum dfield_result dfield_generate(
         uint8_t * data,
         int32_t input_width,
         int32_t input_height,
