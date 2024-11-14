@@ -26,6 +26,17 @@ from datetime import datetime
 import misc.ninja_syntax as ninja
 
 #
+# DIRECTLY INVOKED PROGRAMS
+#
+
+# used only if --defer-pkg-config=false
+pkgconfig = {
+        'release': 'pkg-config',
+        'debug': 'pkg-config',
+        'w64': 'x86_64-w64-mingw32-pkg-config'
+    }
+
+#
 # ARGUMENT PARSING
 #
 
@@ -37,6 +48,9 @@ parser = argparse.ArgumentParser(
 
 parser.add_argument('--cflags', help='override compiler flags')
 parser.add_argument('--cc', help='override cc')
+# TODO
+# parser.add_argument('--glslc', help='override glslc')
+parser.add_argument('--pkg-config', help='override pkg-config')
 parser.add_argument('--ldflags', help='override compiler flags when linking')
 #parser.add_argument('--prefix')
 #parser.add_argument('--destdir')
@@ -67,12 +81,104 @@ parser.add_argument('--force-version', metavar='STRING',
                     help='override the version string')
 parser.add_argument('--add-version-suffix', metavar='SUFFIX',
                     help='append the version string')
+# TODO
+#parser.add_argument('--defer-git-describe', type=bool, default=True,
+#                    help='run git describe when ninja is run, not configure.py (default: true)')
+
+parser.add_argument('--defer-pkg-config', type=bool, default=True,
+                    help='run pkg-config when ninja is run, not configure.py (default: true)')
 
 args = parser.parse_args()
 
 #
 # HELPER FUNCTIONS
 #
+
+def package(name,
+            alias=None,
+            pkg_config=True,
+            libs={},
+            cflags={},
+            comment=True):
+    libs = (libs.get(args.build, '') + ' ' + libs.get('all', '')).strip()
+    if len(libs) > 0:
+        libs = ' ' + libs
+
+    cflags = (cflags.get(args.build, '') + ' ' + cflags.get('all', '')).strip()
+    if len(cflags) > 0:
+        cflags = ' ' + cflags
+
+    if not alias:
+        alias = name
+
+    if comment:
+        w.comment('package ' + name) 
+    if pkg_config:
+        if args.defer_pkg_config:
+            w.variable(alias + '_cflags', '$$($pkgconfig --cflags ' + name + ')')
+            w.variable(alias + '_libs', '$$($pkgconfig --libs ' + name + ')')
+        else:
+            if args.build not in pkgconfig:
+                print('ERROR: --defer-pkg-config is false but there is no pkg-config for build type', args.build, '(have:', pkgconfig, ')', file=sys.stderr)
+                sys.exit(1)
+
+            pc = pkgconfig.get(args.build)
+            pc_cflags = subprocess.run([pc, '--cflags', name],
+                                       capture_output=True)
+            pc_libs = subprocess.run([pc, '--libs', name],
+                                     capture_output=True)
+            if pc_cflags.returncode != 0 or pc_libs.returncode != 0:
+                w.comment(
+                        'WARNING: ' + pc +
+                        ' exited non-zero for library ' + name
+                    )
+                print('WARNING:', pc, 'exited non-zero for library',
+                      name, file=sys.stderr)
+            w.variable(alias + '_cflags',
+                       pc_cflags.stdout.decode().strip() + cflags)
+            w.variable(alias + '_libs',
+                       pc_libs.stdout.decode().strip() + libs)
+    else:
+        w.variable(alias + '_cflags', cflags)
+        w.variable(alias + '_libs', libs)
+    w.newline()
+
+def transformer(source, rule):
+    if rule == 'cc':
+        if source[-2:] == '.c':
+            return source[:-2] + '.o'
+    elif  rule == 'glsl':
+        if source[-5:] == '.glsl':
+            return source[:-5] + '.spv'
+    return source
+
+def build(source,
+          rule='cc',
+          input_prefix='src/',
+          output_prefix='$builddir/',
+          packages=[],
+          cflags='$cflags',
+          includes='$includes',
+          stage=None):
+
+    variables = []
+    cflags = ' '.join([cflags] + ['$' + name + '_cflags' for name in packages])
+    if cflags != '$cflags':
+        variables += [('cflags', cflags)]
+
+    if includes != '$includes':
+        variables += [('includes', includes)]
+
+    if stage:
+        variables += [('stage', stage)]
+
+    w.build(
+            output_prefix + transformer(source, rule),
+            rule,
+            input_prefix + source,
+            variables=variables
+        )
+
 
 def exesuffix(root, enabled):
     if enabled:
@@ -83,7 +189,6 @@ def exesuffix(root, enabled):
 def enable_debug():
     w.variable(key = 'std', value = '-std=gnu23')
     w.variable(key = 'cflags', value = '$cflags $sanflags -g -Og')
-    w.variable(key = 'glfw', value = '-lglfw')
     if not args.force_version:
         w.variable(key = 'version', value = '"$version"-debug')
     else:
@@ -96,19 +201,16 @@ def enable_release():
         w.variable(key = 'cflags', value = '$cflags -O3')
     else:
         w.variable(key = 'cflags', value = '$cflags -O2')
-    w.variable(key = 'glfw', value = '-lglfw')
     w.variable(key = 'defines', value = '$defines -DNDEBUG')
 
 def enable_w64():
     args.disable_argp = True
     w.variable(key = 'std', value = '-std=gnu2x')
-    w.variable(key = 'cflags', value = '$cflags -O2 -static -I/usr/x86_64-w64-mingw32/include')
-    w.variable(key = 'w64netlibs', value = '-lws2_32 -liphlpapi')
-    w.variable(key = 'w64iconv', value = '-liconv')
-    w.variable(key = 'w64curses', value = '-lcurses')
-    w.variable(key = 'glfw', value = '-lglfw3')
+    w.variable(key = 'cflags', value = '$cflags -O2 -static')
+    w.variable(key = 'includes',
+               value = '$includes -I/usr/x86_64-w64-mingw32/include')
+    # TODO: when is this needed?
     w.variable(key = 'mwindows', value = '-mwindows')
-    w.variable(key = 'ldflags', value = '$ldflags -L/usr/x86_64-w64-mingw32/lib')
     w.variable(key = 'defines', value = '$defines -DNDEBUG')
 
 #
@@ -155,6 +257,14 @@ elif args.build == 'w64':
     w.variable(key = 'cc', value = 'x86_64-w64-mingw32-gcc')
 else:
     w.variable(key = 'cc', value = 'gcc')
+
+if args.pkg_config:
+    w.comment('using this pkg-config because we were generated with --pkg-config=' + args.pkg_config)
+    w.variable(key = 'pkgconfig', value = args.pkg_config)
+elif args.build == 'w64':
+    w.variable(key = 'pkgconfig', value = 'x86_64-w64-mingw32-pkg-config')
+else:
+    w.variable(key = 'pkgconfig', value = 'pkg-config')
 
 #
 # CFLAGS/LDFLAGS DEFAULTS
@@ -204,10 +314,7 @@ else:
 # INCLUDES
 #
 
-w.variable(
-        key = 'includes',
-        value = '-Iinclude -Ilibs/quat/include'
-    )
+w.variable(key = 'includes', value = '-Iinclude -Ilibs/quat/include')
 w.newline()
 
 #
@@ -250,6 +357,8 @@ if args.ldflags:
 # OPTIONAL VERSION SUFFIX
 #
 
+w.comment('the version define')
+
 if args.add_version_suffix:
     w.variable(key = 'version', value = '"$version"-' + args.add_version_suffix)
     needs_newline = True
@@ -263,6 +372,13 @@ if needs_newline:
 
 w.variable(key = 'defines', value = '$defines -DVERSION="\\"$version\\""')
 w.newline()
+
+#
+# PACKAGES
+#
+
+package('vulkan')
+package('glfw3')
 
 #
 # NINJA RULES
@@ -299,39 +415,38 @@ w.newline()
 # SOURCES
 #
 
-w.build('$builddir/main.o', 'cc', 'src/main.c')
-w.build('$builddir/dfield.o', 'cc', 'src/dfield.c',
-        variables=[('cflags', '$cflags -fopenmp')])
+w.comment('source files')
+
+build('main.c')
+build('dfield.c', cflags='$cflags -fopenmp')
 w.newline()
 
-w.build('$builddir/renderer/renderer.o', 'cc', 'src/renderer/renderer.c')
+build('renderer/renderer.c', packages=['vulkan', 'glfw3'])
 w.newline()
 
-w.build('$builddir/util/sorted_set.o', 'cc', 'src/util/sorted_set.c')
-w.build('$builddir/util/strdup.o', 'cc', 'src/util/strdup.c')
+build('util/sorted_set.c')
+build('util/strdup.c')
 w.newline()
 
-w.build('$builddir/tools/generate-dfield/generate-dfield.o', 'cc',
-        'src/tools/generate-dfield/generate-dfield.c')
-w.build('$builddir/tools/generate-dfield/args_argp.o', 'cc',
-        'src/tools/generate-dfield/args_argp.c',
-        variables=[('cflags', '$cflags -Wno-missing-field-initializers')])
-w.build('$builddir/tools/generate-dfield/args_getopt.o', 'cc',
-        'src/tools/generate-dfield/args_getopt.c')
+build('tools/generate-dfield/generate-dfield.c')
+build('tools/generate-dfield/args_argp.c',
+      cflags='$cflags -Wno-missing-field-initializers')
+build('tools/generate-dfield/args_getopt.c')
 w.newline()
 
-w.build('$builddir/libs/quat/quat.o', 'cc', 'libs/quat/src/quat.c')
+build('quat.c',
+      input_prefix='libs/quat/src/', output_prefix='$builddir/libs/quat/')
 w.newline()
 
-w.build('$builddir/out/shaders/vertex.spv', 'glslc',
-        'src/shaders/vertex.glsl', variables=[('stage', 'vertex')])
-w.build('$builddir/out/shaders/fragment.spv', 'glslc',
-        'src/shaders/fragment.glsl', variables=[('stage', 'fragment')])
+build('shaders/vertex.glsl', rule='glslc', stage='vertex')
+build('shaders/fragment.glsl', rule='glslc', stage='fragment')
 w.newline()
 
 #
 # OUTPUTS
 #
+
+w.comment('output products')
 
 all_targets = []
 tools_targets = []
@@ -391,11 +506,11 @@ bin_target(
             '$builddir/libs/quat/quat.o'
         ],
         implicit_inputs = [
-            '$builddir/out/shaders/vertex.spv',
-            '$builddir/out/shaders/fragment.spv'
+            '$builddir/shaders/vertex.spv',
+            '$builddir/shaders/fragment.spv'
         ],
         variables = [
-            ('libs', '-lm -lvulkan $glfw $mwindows')
+            ('libs', '-lm $vulkan_libs $glfw3_libs $mwindows')
         ],
         is_disabled = args.disable_client,
         why_disabled = 'we were generated with --disable-client',
