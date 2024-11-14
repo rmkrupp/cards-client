@@ -508,7 +508,7 @@ void * sorted_set_remove_key(
     struct sorted_set * out = sorted_set_create();
 
     while (a_node && b_node) {
-        int result = key_compare(a_node, b_node) == 0;
+        int result = key_compare(a_node, b_node);
         if (result == 0) {
             /* in a and b, not in result */
             a_node = a_node->next[0];
@@ -517,6 +517,7 @@ void * sorted_set_remove_key(
             /* in a and not in b, in result */
             sorted_set_add_key_copy(
                     out, a_node->key, a_node->length, a_node->data);
+            a_node = a_node->next[0];
         } else {
             /* potentially in b, look at next b node */
             b_node = b_node->next[0];
