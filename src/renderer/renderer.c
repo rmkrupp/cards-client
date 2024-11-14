@@ -359,7 +359,11 @@ static enum renderer_init_result setup_instance()
     sorted_set_destroy(layers_set);
 
     if (result != VK_SUCCESS) {
-        fprintf(stderr, "[renderer] vkCreateInstance() failed\n");
+        fprintf(
+                stderr,
+                "[renderer] vkCreateInstance() failed (%d)\n",
+                result
+            );
         renderer_terminate();
         return RENDERER_INIT_ERROR;
     }
@@ -378,7 +382,11 @@ static enum renderer_init_result setup_window_surface()
         );
 
     if (result != VK_SUCCESS) {
-        fprintf(stderr, "[renderer] glfwCreateWindowSurface() failed\n");
+        fprintf(
+                stderr,
+                "[renderer] glfwCreateWindowSurface() failed (%d)\n",
+                result
+            );
         renderer_terminate();
         return RENDERER_INIT_ERROR;
     }
@@ -537,7 +545,11 @@ static enum renderer_init_result setup_swap_chain()
                 renderer.device, &create_info, NULL, &renderer.swap_chain);
 
     if (result != VK_SUCCESS) {
-        fprintf(stderr, "[renderer] vkCreateSwapchainKHR failed\n");
+        fprintf(
+                stderr,
+                "[renderer] vkCreateSwapchainKHR failed (%d)\n",
+                result
+            );
         renderer_terminate();
         return RENDERER_INIT_ERROR;
     }
@@ -775,7 +787,11 @@ static enum renderer_init_result setup_logical_device()
         );
 
     if (result != VK_SUCCESS) {
-        fprintf(stderr, "[renderer] vkCreateDevice() failed\n");
+        fprintf(
+                stderr,
+                "[renderer] vkCreateDevice() failed (%d)\n",
+                result
+            );
         renderer_terminate();
         return RENDERER_INIT_ERROR;
     }
@@ -827,7 +843,11 @@ static enum renderer_init_result setup_image_views()
             );
 
         if (result != VK_SUCCESS) {
-            fprintf(stderr, "[renderer] vkCreateImageView failed\n");
+            fprintf(
+                    stderr,
+                    "[renderer] vkCreateImageView failed (%d)\n",
+                    result
+                );
             renderer_terminate();
             return RENDERER_INIT_ERROR;
         }
@@ -854,7 +874,10 @@ enum renderer_init_result setup_pipeline()
                 &fragment_shader_blob_size);
 
     if (result1 || result2) {
-        fprintf(stderr, "[renderer] loading shaders failed\n");
+        fprintf(
+                stderr,
+                "[renderer] loading shaders failed\n"
+            );
         if (vertex_shader_blob) {
             free(vertex_shader_blob);
         }
@@ -920,7 +943,11 @@ enum renderer_init_result setup_pipeline()
             renderer.device, &pipeline_layout_info, NULL, &renderer.layout);
     
     if (result != VK_SUCCESS) {
-        fprintf(stderr, "[renderer] vkCreatePipelineLayout() failed\n");
+        fprintf(
+                stderr,
+                "[renderer] vkCreatePipelineLayout() failed (%d)\n",
+                result
+            );
         vkDestroyShaderModule(renderer.device, vertex_module, NULL);
         vkDestroyShaderModule(renderer.device, fragment_module, NULL);
         renderer_terminate();
@@ -961,7 +988,11 @@ enum renderer_init_result setup_pipeline()
             renderer.device, &render_pass_info, NULL, &renderer.render_pass);
 
     if (result != VK_SUCCESS) {
-        fprintf(stderr, "[renderer] vkCreateRenderPass() failed\n");
+        fprintf(
+                stderr,
+                "[renderer] vkCreateRenderPass() failed (%d)\n",
+                result
+            );
         vkDestroyShaderModule(renderer.device, vertex_module, NULL);
         vkDestroyShaderModule(renderer.device, fragment_module, NULL);
         renderer_terminate();
@@ -1071,7 +1102,11 @@ enum renderer_init_result setup_pipeline()
         );
 
     if (result != VK_SUCCESS) {
-        fprintf(stderr, "[renderer] vkCreateGraphicsPipelines() failed\n");
+        fprintf(
+                stderr,
+                "[renderer] vkCreateGraphicsPipelines() failed (%d)\n",
+                result
+            );
         vkDestroyShaderModule(renderer.device, vertex_module, NULL);
         vkDestroyShaderModule(renderer.device, fragment_module, NULL);
         renderer_terminate();
