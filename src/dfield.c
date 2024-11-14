@@ -26,6 +26,14 @@
 #include <errno.h>
 #include <string.h>
 
+#include <lzma.h>
+
+/* preset to use when compressing dfield data */
+constexpr uint32_t lzma_preset = 6;
+
+/* hint to lzma for max memory to use, UINT64_MAX for no limit */
+constexpr uint64_t lzma_memory_usage_limit = UINT64_MAX;
+
 /* the magic bytes at the beginning of a dfield file */
 constexpr char magic[] = { 'D', 'F' };
 
@@ -38,6 +46,8 @@ const char * dfield_result_string(enum dfield_result result)
     const char * strings[] = {
         [DFIELD_RESULT_OKAY] = "no error",
         /* errno is handled specially */
+        [DFIELD_RESULT_ERROR_MEMORY] =
+            "memory error (malloc returned NULL)",
         [DFIELD_RESULT_ERROR_READ_SIZE] =
             "number of bytes read didn't match expected",
         [DFIELD_RESULT_ERROR_MAGIC] = "magic bytes read didn't match expected",
@@ -50,7 +60,10 @@ const char * dfield_result_string(enum dfield_result result)
         [DFIELD_RESULT_ERROR_BAD_OUTPUT_SIZE] =
             "output_height or output_width are invalid (n <= 0)",
         [DFIELD_RESULT_ERROR_BAD_SPREAD] =
-            "spread is invalid (n <= 0 or n > 32768)"
+            "spread is invalid (n <= 0 or n > 32768)",
+        [DFIELD_RESULT_ERROR_LZMA] = "LZMA error",
+        [DFIELD_RESULT_ERROR_BAD_DECOMPRESSED_SIZE] =
+            "decompressed size doesn't match size in the header"
     };
 
     if (result < 0 || result > sizeof(strings) / sizeof(*strings)) {
@@ -71,12 +84,14 @@ const char * dfield_result_string(enum dfield_result result)
 enum dfield_result dfield_from_file(
         const char * path, struct dfield * dfield_out) [[gnu::nonnull(1, 2)]]
 {
+    /* open the file */
     FILE * dfield_file = fopen(path, "rb");
 
     if (!dfield_file) {
         return DFIELD_RESULT_ERROR_ERRNO;
     }
 
+    /* read the header */
     char magic_in[sizeof(magic)];
     size_t rd = fread(magic_in, 1, sizeof(magic), dfield_file);
     if (rd != sizeof(magic)) {
@@ -92,7 +107,7 @@ enum dfield_result dfield_from_file(
     }
 
     int32_t size[2];
-    rd = fread(size, 2, sizeof(*size), dfield_file);
+    rd = fread(size, 1, sizeof(size), dfield_file);
 
     if (rd != sizeof(size)) {
         fclose(dfield_file);
@@ -104,19 +119,83 @@ enum dfield_result dfield_from_file(
         return DFIELD_RESULT_ERROR_BAD_SIZE;
     }
 
-    int8_t * buffer = malloc(size[0] * size[1]);
-    rd = fread(buffer, 1, size[0] * size[1], dfield_file);
-
-    fclose(dfield_file);
-
-    if (rd != (size_t)size[0] * (size_t)size[1]) {
-        return DFIELD_RESULT_ERROR_READ_SIZE;
+    size_t buffer_size = size[0] * size[1];
+    uint8_t * buffer = malloc(buffer_size);
+    if (!buffer) {
+        fclose(dfield_file);
+        return DFIELD_RESULT_ERROR_MEMORY;
     }
+    uint8_t * read_buffer = malloc(buffer_size);
+    if (!read_buffer) {
+        fclose(dfield_file);
+        free(buffer);
+        return DFIELD_RESULT_ERROR_MEMORY;
+    }
+    lzma_stream stream = LZMA_STREAM_INIT;
+    lzma_ret ret = lzma_stream_decoder(&stream, lzma_memory_usage_limit, 0);
+    if (ret != LZMA_OK) {
+        free(buffer);
+        fclose(dfield_file);
+        return DFIELD_RESULT_ERROR_LZMA;
+    }
+
+    stream.next_in = NULL;
+    stream.avail_in = 0;
+    stream.next_out = buffer;
+    stream.avail_out = buffer_size;
+    lzma_action action = LZMA_RUN;
+
+    for (;;) {
+        if (stream.avail_in == 0) {
+            stream.next_in = read_buffer;
+            stream.avail_in = fread(read_buffer, 1, buffer_size, dfield_file);
+            if (feof(dfield_file)) {
+                action = LZMA_FINISH;
+            }
+            if (ferror(dfield_file)) {
+                lzma_end(&stream);
+                free(read_buffer);
+                free(buffer);
+                return DFIELD_RESULT_ERROR_ERRNO;
+            }
+        }
+        ret = lzma_code(&stream, action);
+
+        if (stream.avail_out == 0) {
+            if (ret != LZMA_STREAM_END) {
+                lzma_end(&stream);
+                free(read_buffer);
+                free(buffer);
+                fclose(dfield_file);
+                return DFIELD_RESULT_ERROR_LZMA;
+            }
+            size_t total_size = buffer_size - stream.avail_out;
+            if (total_size != (size_t)size[0] * (size_t)size[1]) {
+                lzma_end(&stream);
+                free(read_buffer);
+                free(buffer);
+                fclose(dfield_file);
+                return DFIELD_RESULT_ERROR_BAD_DECOMPRESSED_SIZE;
+            }
+            break;
+        }
+
+        if (ret != LZMA_OK) {
+            lzma_end(&stream);
+            free(read_buffer);
+            fclose(dfield_file);
+            free(buffer);
+            return DFIELD_RESULT_ERROR_LZMA;
+        }
+    }
+
+    lzma_end(&stream);
+    free(read_buffer);
 
     *dfield_out = (struct dfield) {
         .width = size[0],
         .height = size[1],
-        .data = buffer
+        .data = (int8_t *)buffer
     };
 
     return DFIELD_RESULT_OKAY;
@@ -143,6 +222,9 @@ enum dfield_result dfield_data_from_file(
     size_t size = (size_t)width * (size_t)height;
 
     uint8_t * data = malloc(size);
+    if (!data) {
+        return DFIELD_RESULT_ERROR_MEMORY;
+    }
 
     size_t rd = fread(data, 1, size, raw_file);
 
@@ -168,28 +250,72 @@ enum dfield_result dfield_to_file(
     assert(dfield->width > 0);
     assert(dfield->height > 0);
 
+    lzma_stream stream = LZMA_STREAM_INIT;
+    lzma_ret ret = lzma_easy_encoder(&stream, lzma_preset, LZMA_CHECK_CRC64);
+    if (ret != LZMA_OK) {
+        lzma_end(&stream);
+        return DFIELD_RESULT_ERROR_LZMA;
+    }
+
+    /* open the file */
     FILE * dfield_file = fopen(path, "wb");
 
     if (!dfield_file) {
+        lzma_end(&stream);
         return DFIELD_RESULT_ERROR_ERRNO;
     }
 
+    /* write the header */
     size_t rd = fwrite(magic, 1, sizeof(magic), dfield_file);
     rd += fwrite(&dfield->width, 1, sizeof(dfield->width), dfield_file);
     rd += fwrite(&dfield->height, 1, sizeof(dfield->height), dfield_file);
 
     if (rd != sizeof(magic) + sizeof(dfield->width) + sizeof(dfield->height)) {
+        lzma_end(&stream);
         fclose(dfield_file);
         return DFIELD_RESULT_ERROR_WRITE_SIZE;
     }
 
-    rd = fwrite(dfield->data, 1, dfield->width * dfield->height, dfield_file);
-
-    fclose(dfield_file);
-
-    if (rd != (size_t)dfield->width * (size_t)dfield->height) {
-        return DFIELD_RESULT_ERROR_WRITE_SIZE;
+    /* write the compressed data */
+    constexpr size_t buffer_size = 1024 * 1024;
+    uint8_t * buffer = malloc(buffer_size);
+    if (!buffer) {
+        lzma_end(&stream);
+        fclose(dfield_file);
+        return DFIELD_RESULT_ERROR_MEMORY;
     }
+    stream.avail_in = dfield->width * dfield->height;
+    stream.next_in = (uint8_t *)dfield->data;
+    stream.avail_out = buffer_size;
+    stream.next_out = buffer;
+
+    lzma_action action = LZMA_RUN;
+    for (;;) {
+        if (stream.avail_in == 0) {
+            action = LZMA_FINISH;
+        }
+        ret = lzma_code(&stream, action);
+        if (stream.avail_out == 0 || ret == LZMA_STREAM_END) {
+            rd = fwrite(buffer, 1, buffer_size - stream.avail_out, dfield_file);
+            if (rd != buffer_size - stream.avail_out) {
+                lzma_end(&stream);
+                free(buffer);
+                fclose(dfield_file);
+                return DFIELD_RESULT_ERROR_WRITE_SIZE;
+            }
+            break;
+        }
+    }
+    if (ret != LZMA_STREAM_END) {
+        lzma_end(&stream);
+        free(buffer);
+        fclose(dfield_file);
+        return DFIELD_RESULT_ERROR_LZMA;
+    }
+
+    lzma_end(&stream);
+    free(buffer);
+    fclose(dfield_file);
 
     return DFIELD_RESULT_OKAY;
 }
@@ -225,6 +351,9 @@ enum dfield_result dfield_to_file(
     }
     
     int8_t * field = malloc(output_width * output_height);
+    if (!field) {
+        return DFIELD_RESULT_ERROR_MEMORY;
+    }
 
     double y_scale = (double)input_height / output_height;
     double x_scale = (double)input_width / output_width;

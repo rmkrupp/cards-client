@@ -34,6 +34,10 @@ enum dfield_result {
     DFIELD_RESULT_OKAY = 0,
 
     DFIELD_RESULT_ERROR_ERRNO, /* error, check errno */
+    DFIELD_RESULT_ERROR_MEMORY, /* malloc returned NULL
+                                   note that we check this because of the
+                                   externally-derived allocation sizes implied
+                                   by the size fields in the heaader */
     DFIELD_RESULT_ERROR_READ_SIZE, /* bytes read didn't match expected */
     DFIELD_RESULT_ERROR_MAGIC, /* magic bytes didn't match expected */
     DFIELD_RESULT_ERROR_BAD_SIZE, /* size fields contained invalid value */
@@ -45,7 +49,12 @@ enum dfield_result {
     DFIELD_RESULT_ERROR_BAD_OUTPUT_SIZE, /* values passed for output_height or
                                           * output_width are invalid
                                           */
-    DFIELD_RESULT_ERROR_BAD_SPREAD /* value passed for spread is invalid */
+    DFIELD_RESULT_ERROR_BAD_SPREAD, /* value passed for spread is invalid */
+
+    DFIELD_RESULT_ERROR_LZMA, /* error with lzma library */
+    DFIELD_RESULT_ERROR_BAD_DECOMPRESSED_SIZE /* post-decompression size
+                                               * doesn't match the header
+                                               */
 };
 
 /* get a string representation of an error. valid forever unless result is

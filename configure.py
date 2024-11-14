@@ -379,6 +379,7 @@ w.newline()
 
 package('vulkan')
 package('glfw3')
+package('liblzma', alias='lzma')
 
 #
 # NINJA RULES
@@ -418,7 +419,7 @@ w.newline()
 w.comment('source files')
 
 build('main.c')
-build('dfield.c', cflags='$cflags -fopenmp')
+build('dfield.c', cflags='$cflags -fopenmp', packages=['lzma'])
 w.newline()
 
 build('renderer/renderer.c', packages=['vulkan', 'glfw3'])
@@ -510,7 +511,7 @@ bin_target(
             '$builddir/shaders/fragment.spv'
         ],
         variables = [
-            ('libs', '-lm $vulkan_libs $glfw3_libs $mwindows')
+            ('libs', '-lm $vulkan_libs $glfw3_libs $lzma_libs $mwindows')
         ],
         is_disabled = args.disable_client,
         why_disabled = 'we were generated with --disable-client',
@@ -531,7 +532,7 @@ bin_target(
             '$builddir/tools/generate-dfield/args_getopt.o'
         ],
         variables = [
-            ('libs', '-lm -fopenmp')
+            ('libs', '-lm -fopenmp $lzma_libs')
         ],
         is_disabled = 'generate-dfield' in args.disable_tool,
         why_disabled = 'we were generated with --disable-tool=generate-dfield',

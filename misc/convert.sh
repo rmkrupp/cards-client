@@ -28,15 +28,18 @@ fi
 # TODO: we should support creating multiple resolutions from each input
 #
 
+in=4098
+out="$2"
+spread="$2"
 dir="$(mktemp -d)"
 mkdir -p "$dir/$(dirname $1)"
 outdir="out/$(dirname "$1")/$2"
 outbase="$(basename "$1")"
 mkdir -p "$outdir"
-inkscape -C -o "$dir/${1%.svg}.png" -w 2048 -h 2048 "$1" || exit 1
+inkscape -C -o "$dir/${1%.svg}.png" -w "$in" -h "$in" "$1" || exit 1
 magick "$dir/${1%.svg}.png" -transparent "#FFFFFFFF" -alpha Extract \
     "gray:$dir/${1%.svg}.dat" || exit 1
-./tools/generate-dfield -I 2048 -O "$2" -S 8 \
+./tools/generate-dfield -I "$in" -O "$out" -S "$spread" \
     "$outdir/${outbase%.svg}.dfield" "$dir/${1%.svg}.dat" || exit 1
-magick -depth 8 -size "$2x$2" "gray:$outdir/${outbase%.svg}.dfield" "$outdir/${outbase%.svg}.png"
+#magick -depth 8 -size "$2x$2" "gray:$outdir/${outbase%.svg}.dfield" "$outdir/${outbase%.svg}.png"
 
