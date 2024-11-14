@@ -84,9 +84,9 @@ parser.add_argument('--add-version-suffix', metavar='SUFFIX',
 # TODO
 #parser.add_argument('--defer-git-describe', type=bool, default=True,
 #                    help='run git describe when ninja is run, not configure.py (default: true)')
-
 parser.add_argument('--defer-pkg-config', type=bool, default=True,
-                    help='run pkg-config when ninja is run, not configure.py (default: true)')
+                    action=argparse.BooleanOptionalAction,
+                    help='run pkg-config when ninja is run, not configure.py (default: yes)')
 
 args = parser.parse_args()
 
