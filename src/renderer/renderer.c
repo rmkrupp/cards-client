@@ -69,7 +69,7 @@ struct renderer {
         VkSurfaceCapabilitiesKHR capabilities;
         VkSurfaceFormatKHR * formats;
         VkSurfaceFormatKHR format; /* the format we picked */
-        uint32_t  n_formats;
+        uint32_t n_formats;
         VkPresentModeKHR * present_modes;
         VkPresentModeKHR present_mode; /* the present mode we picked */
         uint32_t n_present_modes;
@@ -84,6 +84,8 @@ struct renderer {
     VkRenderPass render_pass;
     VkPipelineLayout layout;
     VkPipeline pipeline;
+
+    VkFramebuffer * framebuffers;
 
 } renderer = { };
 
@@ -1119,6 +1121,47 @@ enum renderer_init_result setup_pipeline()
     return RENDERER_INIT_OKAY;
 }
 
+/* create the framebuffers */
+enum renderer_init_result setup_framebuffers()
+{
+    renderer.framebuffers = calloc(
+            renderer.n_swap_chain_images, sizeof(*renderer.framebuffers));
+
+
+    for (uint32_t i = 0; i < renderer.n_swap_chain_images; i++) {
+        VkFramebufferCreateInfo framebuffer_info = {
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .renderPass = renderer.render_pass,
+            .attachmentCount = 1,
+            .pAttachments = (VkImageView[]) {
+                renderer.swap_chain_image_views[i]
+            },
+            .width = renderer.chain_details.extent.width,
+            .height = renderer.chain_details.extent.height,
+            .layers = 1
+        };
+
+        VkResult result = vkCreateFramebuffer(
+                renderer.device,
+                &framebuffer_info,
+                NULL,
+                &renderer.framebuffers[i]
+            );
+
+        if (result != VK_SUCCESS) {
+            fprintf(
+                    stderr,
+                    "[renderer] vkCreateFramebuffer() failed (%d)\n",
+                    result
+                );
+            renderer_terminate();
+            return RENDERER_INIT_ERROR;
+        }
+    }
+
+    return RENDERER_INIT_OKAY;
+}
+
 /* initialize the renderer */
 enum renderer_init_result renderer_init()
 {
@@ -1148,6 +1191,9 @@ enum renderer_init_result renderer_init()
     result = setup_pipeline();
     if (result) return result;
 
+    result = setup_framebuffers();
+    if (result) return result;
+
     renderer.initialized = true;
 
     return RENDERER_INIT_OKAY;
@@ -1156,6 +1202,17 @@ enum renderer_init_result renderer_init()
 void renderer_terminate()
 {
     renderer.initialized = false;
+
+    if (renderer.framebuffers) {
+        for (uint32_t i = 0; i < renderer.n_swap_chain_images; i++) {
+            if (renderer.framebuffers[i]) {
+                vkDestroyFramebuffer(
+                        renderer.device, renderer.framebuffers[i], NULL);
+                renderer.framebuffers[i] = NULL;
+            }
+        }
+        free(renderer.framebuffers);
+    }
 
     if (renderer.pipeline) {
         vkDestroyPipeline(renderer.device, renderer.pipeline, NULL);
