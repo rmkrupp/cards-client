@@ -80,12 +80,14 @@ struct renderer {
     VkImage * swap_chain_images;
     uint32_t n_swap_chain_images;
     VkImageView * swap_chain_image_views;
+    VkFramebuffer * framebuffers;
 
     VkRenderPass render_pass;
     VkPipelineLayout layout;
     VkPipeline pipeline;
 
-    VkFramebuffer * framebuffers;
+    VkCommandPool command_pool;
+    VkCommandBuffer command_buffer;
 
 } renderer = { };
 
@@ -859,7 +861,7 @@ static enum renderer_init_result setup_image_views()
 }
 
 /* create the graphics pipeline(s) */
-enum renderer_init_result setup_pipeline()
+static enum renderer_init_result setup_pipeline()
 {
     char * vertex_shader_blob = NULL,
          * fragment_shader_blob = NULL;
@@ -1122,7 +1124,7 @@ enum renderer_init_result setup_pipeline()
 }
 
 /* create the framebuffers */
-enum renderer_init_result setup_framebuffers()
+static enum renderer_init_result setup_framebuffers()
 {
     renderer.framebuffers = calloc(
             renderer.n_swap_chain_images, sizeof(*renderer.framebuffers));
@@ -1162,6 +1164,51 @@ enum renderer_init_result setup_framebuffers()
     return RENDERER_INIT_OKAY;
 }
 
+/* create the command pool and buffer */
+static enum renderer_init_result setup_command_pool()
+{
+    VkCommandPoolCreateInfo pool_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        .queueFamilyIndex = renderer.queue_families.graphics.index
+    };
+
+    VkResult result = vkCreateCommandPool(
+            renderer.device, &pool_info, NULL, &renderer.command_pool);
+
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkCreateCommandPool() failed (%d)\n",
+                result
+            );
+        renderer_terminate();
+        return RENDERER_INIT_ERROR;
+    }
+
+    VkCommandBufferAllocateInfo buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = renderer.command_pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1
+    };
+
+    result = vkAllocateCommandBuffers(
+            renderer.device, &buffer_info, &renderer.command_buffer);
+
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkAllocateCommandBuffers() failed (%d)\n",
+                result
+            );
+        renderer_terminate();
+        return RENDERER_INIT_ERROR;
+    }
+
+    return RENDERER_INIT_OKAY;
+}
+
 /* initialize the renderer */
 enum renderer_init_result renderer_init()
 {
@@ -1194,6 +1241,9 @@ enum renderer_init_result renderer_init()
     result = setup_framebuffers();
     if (result) return result;
 
+    result = setup_command_pool();
+    if (result) return result;
+
     renderer.initialized = true;
 
     return RENDERER_INIT_OKAY;
@@ -1201,7 +1251,9 @@ enum renderer_init_result renderer_init()
 
 void renderer_terminate()
 {
-    renderer.initialized = false;
+    if (renderer.command_pool) {
+        vkDestroyCommandPool(renderer.device, renderer.command_pool, NULL);
+    }
 
     if (renderer.framebuffers) {
         for (uint32_t i = 0; i < renderer.n_swap_chain_images; i++) {
@@ -1297,6 +1349,8 @@ void renderer_terminate()
         glfwTerminate();
         renderer.glfw_needs_terminate = false;
     }
+
+    renderer.initialized = false;
 }
 
 void renderer_loop()
