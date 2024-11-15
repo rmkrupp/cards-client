@@ -27,7 +27,14 @@ int main(int argc, char ** argv)
     (void)argc;
     (void)argv;
 
-    if (renderer_init()) {
+    enum renderer_result result =
+        renderer_init(
+                &(struct renderer_configuration) {
+                    .max_frames_in_flight = 2
+                }
+            );
+    
+    if (result) {
         return 1;
     }
 

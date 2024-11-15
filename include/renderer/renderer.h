@@ -20,6 +20,12 @@
 #ifndef RENDERER_RENDERER_H
 #define RENDERER_RENDERER_H
 
+#include <stdint.h>
+
+struct renderer_configuration {
+    uint32_t max_frames_in_flight;
+};
+
 enum renderer_result {
     RENDERER_OKAY,
     RENDERER_ERROR
@@ -30,7 +36,8 @@ enum renderer_result {
  * after it has been called, renderer_terminate() must be called when the
  * program ends
  */
-enum renderer_result renderer_init();
+enum renderer_result renderer_init(
+        const struct renderer_configuration * config);
 
 /* call this after renderer_init() before the program ends
  *

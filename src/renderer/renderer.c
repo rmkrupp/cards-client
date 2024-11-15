@@ -19,7 +19,14 @@
  */
 #include "renderer/renderer.h"
 
-/* TODO: when we add configuration, make this configurable at run-time */
+/* TODO: configuration
+ *
+ *       see below comments, but also:
+ *
+ *        - multisampling
+ *        - color space stuff?
+ */
+
 #ifndef SHADER_BASE_PATH
 #define SHADER_BASE_PATH "out/shaders"
 #endif /* SHADER_BASE_PATH */
@@ -37,6 +44,8 @@
 #include <errno.h>
 
 struct renderer {
+
+    struct renderer_configuration config;
 
     bool initialized; /* true if renderer_init() returned OKAY and 
                        * renderer_terminate() hasn't been called
@@ -88,13 +97,15 @@ struct renderer {
     VkPipeline pipeline;
 
     VkCommandPool command_pool;
-    VkCommandBuffer command_buffer;
+    VkCommandBuffer * command_buffers;
 
     struct {
         VkSemaphore image_available,
                     render_finished;
         VkFence in_flight;
-    } sync;
+    } * sync;
+
+    uint32_t current_frame;
 
 } renderer = { };
 
@@ -209,6 +220,7 @@ static enum renderer_result setup_glfw()
 
     glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    /* TODO: configurable: window resolution, fullscreen vs windowed */
     renderer.window = glfwCreateWindow(800, 600, "cards-client", NULL, NULL);
 
     if (!renderer.window) {
@@ -249,6 +261,11 @@ static enum renderer_result setup_instance()
      *       as an optional extension, and if it exists set the
      *       .flags field in the instance create info to
      *       VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_KHR
+     *
+     *       this will require a set_intersection sorted_set function
+     *
+     *       and a configuration option for verbosity for reporting whether
+     *       optional extensions were present?
      */
     const char * our_extensions[] = { };
     sorted_set_add_keys_copy(
@@ -311,6 +328,7 @@ static enum renderer_result setup_instance()
 
     struct sorted_set * layers_set = sorted_set_create();
 
+    /* TODO: base this on something besides NDEBUG ? */
 #if !NDEBUG
     sorted_set_add_key_copy(
             layers_set, "VK_LAYER_KHRONOS_validation", 0, NULL);
@@ -684,7 +702,11 @@ static enum renderer_result setup_physical_device()
 
     VkPhysicalDevice candidate = NULL;
     /* find a suitable device */
-    /* TODO: user override */
+    /* TODO: configuration to either select the device automatically or to
+     *       always select a specific device, plus a function to query for a
+     *       list of devices to present as choices to the user, possibly
+     *       filtered for devices that are compatible? (or present two lists)
+     */
     for (size_t i = 0; i < n_devices; i++) {
         VkPhysicalDeviceProperties device_properties;
         vkGetPhysicalDeviceProperties(devices[i], &device_properties);
@@ -758,6 +780,7 @@ static enum renderer_result setup_physical_device()
 
     VkPhysicalDeviceProperties device_properties;
     vkGetPhysicalDeviceProperties(candidate, &device_properties);
+    /* TODO: configurable verbosity */
     fprintf(
             stderr,
             "[renderer] (INFO) picked device %s (discrete: %s)\n",
@@ -774,7 +797,7 @@ static enum renderer_result setup_physical_device()
 /* create a logical device */
 static enum renderer_result setup_logical_device()
 {
-    // TODO: create for each unique queue family
+    /* TODO: create for each unique queue family */
     VkDeviceQueueCreateInfo queue_create_info[] = {
         {
             .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
@@ -1229,15 +1252,20 @@ static enum renderer_result setup_command_pool()
         return RENDERER_ERROR;
     }
 
+    renderer.command_buffers = malloc(
+            sizeof(*renderer.command_buffers) *
+            renderer.config.max_frames_in_flight
+        );
+
     VkCommandBufferAllocateInfo buffer_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool = renderer.command_pool,
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 1
+        .commandBufferCount = renderer.config.max_frames_in_flight
     };
 
     result = vkAllocateCommandBuffers(
-            renderer.device, &buffer_info, &renderer.command_buffer);
+            renderer.device, &buffer_info, renderer.command_buffers);
 
     if (result != VK_SUCCESS) {
         fprintf(
@@ -1255,63 +1283,68 @@ static enum renderer_result setup_command_pool()
 /* set up sync objects */
 static enum renderer_result setup_sync_objects()
 {
-    VkSemaphoreCreateInfo semaphore_info = {
-        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
-    };
+    renderer.sync = calloc(
+            renderer.config.max_frames_in_flight, sizeof(*renderer.sync));
 
-    VkResult result = vkCreateSemaphore(
-            renderer.device,
-            &semaphore_info,
-            NULL,
-            &renderer.sync.image_available
-        );
+    for (uint32_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
+        VkSemaphoreCreateInfo semaphore_info = {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
+        };
 
-    if (result != VK_SUCCESS) {
-        fprintf(
-                stderr,
-                "[renderer] vkCreateSemaphore() failed (%d)\n",
-                result
+        VkResult result = vkCreateSemaphore(
+                renderer.device,
+                &semaphore_info,
+                NULL,
+                &renderer.sync[i].image_available
             );
-        return RENDERER_ERROR;
-    }
 
-    result = vkCreateSemaphore(
-            renderer.device,
-            &semaphore_info,
-            NULL,
-            &renderer.sync.render_finished
-        );
+        if (result != VK_SUCCESS) {
+            fprintf(
+                    stderr,
+                    "[renderer] vkCreateSemaphore() failed (%d)\n",
+                    result
+                );
+            return RENDERER_ERROR;
+        }
 
-    if (result != VK_SUCCESS) {
-        fprintf(
-                stderr,
-                "[renderer] vkCreateSemaphore() failed (%d)\n",
-                result
+        result = vkCreateSemaphore(
+                renderer.device,
+                &semaphore_info,
+                NULL,
+                &renderer.sync[i].render_finished
             );
-        return RENDERER_ERROR;
-    }
 
-    VkFenceCreateInfo fence_info = {
-        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-        .flags = VK_FENCE_CREATE_SIGNALED_BIT /* start signalled because the
-                                               * first frame should not wait
-                                               */
-    };
+        if (result != VK_SUCCESS) {
+            fprintf(
+                    stderr,
+                    "[renderer] vkCreateSemaphore() failed (%d)\n",
+                    result
+                );
+            return RENDERER_ERROR;
+        }
 
-    result = vkCreateFence(
-            renderer.device,
-            &fence_info,
-            NULL,
-            &renderer.sync.in_flight
-        );
+        VkFenceCreateInfo fence_info = {
+            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            .flags = VK_FENCE_CREATE_SIGNALED_BIT /* start signalled because the
+                                                   * first frame should not wait
+                                                   */
+        };
 
-    if (result != VK_SUCCESS) {
-        fprintf(
-                stderr,
-                "[renderer] vkCreateFence() failed (%d)\n",
-                result
+        result = vkCreateFence(
+                renderer.device,
+                &fence_info,
+                NULL,
+                &renderer.sync[i].in_flight
             );
-        return RENDERER_ERROR;
+
+        if (result != VK_SUCCESS) {
+            fprintf(
+                    stderr,
+                    "[renderer] vkCreateFence() failed (%d)\n",
+                    result
+                );
+            return RENDERER_ERROR;
+        }
     }
 
     return RENDERER_OKAY;
@@ -1407,21 +1440,33 @@ static enum renderer_result record_command_buffer(
 static enum renderer_result renderer_draw_frame()
 {
     vkWaitForFences(
-            renderer.device, 1, &renderer.sync.in_flight, VK_TRUE, UINT64_MAX);
-    vkResetFences(renderer.device, 1, &renderer.sync.in_flight);
+            renderer.device,
+            1,
+            &renderer.sync[renderer.current_frame].in_flight,
+            VK_TRUE,
+            UINT64_MAX
+        );
+    vkResetFences(
+            renderer.device,
+            1,
+            &renderer.sync[renderer.current_frame].in_flight
+        );
 
     uint32_t image_index;
     vkAcquireNextImageKHR(
             renderer.device,
             renderer.swap_chain,
             UINT64_MAX,
-            renderer.sync.image_available,
+            renderer.sync[renderer.current_frame].image_available,
             VK_NULL_HANDLE,
             &image_index
         );
 
-    vkResetCommandBuffer(renderer.command_buffer, 0);
-    if (record_command_buffer(renderer.command_buffer, image_index)) {
+    vkResetCommandBuffer(renderer.command_buffers[renderer.current_frame], 0);
+    if (record_command_buffer(
+                renderer.command_buffers[renderer.current_frame],
+                image_index
+            )) {
         return RENDERER_ERROR;
     }
 
@@ -1429,23 +1474,27 @@ static enum renderer_result renderer_draw_frame()
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .waitSemaphoreCount = 1,
         .pWaitSemaphores = (VkSemaphore[]) {
-            renderer.sync.image_available
+            renderer.sync[renderer.current_frame].image_available
         },
         .pWaitDstStageMask = (VkPipelineStageFlags[]) {
             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
         },
         .commandBufferCount = 1,
         .pCommandBuffers = (VkCommandBuffer[]) {
-            renderer.command_buffer
+            renderer.command_buffers[renderer.current_frame]
         },
         .signalSemaphoreCount = 1,
         .pSignalSemaphores = (VkSemaphore[]) {
-            renderer.sync.render_finished
+            renderer.sync[renderer.current_frame].render_finished
         }
     };
 
     VkResult result = vkQueueSubmit(
-            renderer.graphics_queue, 1, &submit_info, renderer.sync.in_flight);
+            renderer.graphics_queue,
+            1,
+            &submit_info,
+            renderer.sync[renderer.current_frame].in_flight
+        );
 
     if (result != VK_SUCCESS) {
         fprintf(
@@ -1460,7 +1509,7 @@ static enum renderer_result renderer_draw_frame()
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .waitSemaphoreCount = 1,
         .pWaitSemaphores = (VkSemaphore[]) {
-            renderer.sync.render_finished
+            renderer.sync[renderer.current_frame].render_finished
         },
         .swapchainCount = 1,
         .pSwapchains = (VkSwapchainKHR[]) {
@@ -1471,12 +1520,18 @@ static enum renderer_result renderer_draw_frame()
 
     vkQueuePresentKHR(renderer.present_queue, &present_info);
 
+    renderer.current_frame =
+        (renderer.current_frame + 1) % renderer.config.max_frames_in_flight;
+
     return RENDERER_OKAY;
 }
 
 /* initialize the renderer */
-enum renderer_result renderer_init()
+enum renderer_result renderer_init(
+        const struct renderer_configuration * config)
 {
+    renderer.config = *config;
+
     enum renderer_result result;
 
     result = setup_glfw();
@@ -1519,22 +1574,28 @@ enum renderer_result renderer_init()
 
 void renderer_terminate()
 {
-    if (renderer.sync.image_available) {
-        vkDestroySemaphore(
-                renderer.device, renderer.sync.image_available, NULL);
-        renderer.sync.image_available = NULL;
+    for (size_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
+        if (renderer.sync[i].image_available) {
+            vkDestroySemaphore(
+                    renderer.device, renderer.sync[i].image_available, NULL);
+            renderer.sync[i].image_available = NULL;
+        }
+
+        if (renderer.sync[i].render_finished) {
+            vkDestroySemaphore(
+                    renderer.device, renderer.sync[i].render_finished, NULL);
+            renderer.sync[i].render_finished = NULL;
+        }
+
+        if (renderer.sync[i].in_flight) {
+            vkDestroyFence(
+                    renderer.device, renderer.sync[i].in_flight, NULL);
+            renderer.sync[i].in_flight = NULL;
+        }
     }
 
-    if (renderer.sync.render_finished) {
-        vkDestroySemaphore(
-                renderer.device, renderer.sync.render_finished, NULL);
-        renderer.sync.render_finished = NULL;
-    }
-
-    if (renderer.sync.in_flight) {
-        vkDestroyFence(
-                renderer.device, renderer.sync.in_flight, NULL);
-        renderer.sync.in_flight = NULL;
+    if (renderer.sync) {
+        free(renderer.sync);
     }
 
     if (renderer.command_pool) {
