@@ -20,9 +20,9 @@
 #ifndef RENDERER_RENDERER_H
 #define RENDERER_RENDERER_H
 
-enum renderer_init_result {
-    RENDERER_INIT_OKAY,
-    RENDERER_INIT_ERROR
+enum renderer_result {
+    RENDERER_OKAY,
+    RENDERER_ERROR
 };
 
 /* call this once per program to initialize the renderer
@@ -30,7 +30,7 @@ enum renderer_init_result {
  * after it has been called, renderer_terminate() must be called when the
  * program ends
  */
-enum renderer_init_result renderer_init();
+enum renderer_result renderer_init();
 
 /* call this after renderer_init() before the program ends
  *

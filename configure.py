@@ -147,7 +147,7 @@ def transformer(source, rule):
     if rule == 'cc':
         if source[-2:] == '.c':
             return source[:-2] + '.o'
-    elif  rule == 'glsl':
+    elif rule == 'glslc':
         if source[-5:] == '.glsl':
             return source[:-5] + '.spv'
     return source

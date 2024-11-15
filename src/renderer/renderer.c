@@ -61,7 +61,8 @@ struct renderer {
           present; /* the presentation queue family */
     } queue_families; /* the queue families */
 
-    VkQueue graphics_queue; /* the graphics queue */
+    VkQueue graphics_queue,
+            present_queue; /* the queues */
 
     VkSurfaceKHR surface; /* the window surface */
 
@@ -89,9 +90,15 @@ struct renderer {
     VkCommandPool command_pool;
     VkCommandBuffer command_buffer;
 
+    struct {
+        VkSemaphore image_available,
+                    render_finished;
+        VkFence in_flight;
+    } sync;
+
 } renderer = { };
 
-static enum renderer_init_result load_file(
+static enum renderer_result load_file(
         const char * name,
         char ** buffer_out,
         size_t * size_out
@@ -112,7 +119,7 @@ static enum renderer_init_result load_file(
                 strerror(errno)
             );
         free(fullpath);
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
 
     if (fseek(file, 0, SEEK_END)) {
@@ -124,7 +131,7 @@ static enum renderer_init_result load_file(
             );
         fclose(file);
         free(fullpath);
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
 
     long tell_size = ftell(file);
@@ -138,7 +145,7 @@ static enum renderer_init_result load_file(
             );
         fclose(file);
         free(fullpath);
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
 
     if (fseek(file, 0, SEEK_SET)) {
@@ -150,7 +157,7 @@ static enum renderer_init_result load_file(
             );
         fclose(file);
         free(fullpath);
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
 
     if (tell_size == 0) {
@@ -163,7 +170,7 @@ static enum renderer_init_result load_file(
         free(fullpath);
         *buffer_out = NULL;
         *size_out = 0;
-        return RENDERER_INIT_OKAY;
+        return RENDERER_OKAY;
     }
 
     char * buffer = malloc(tell_size);
@@ -178,7 +185,7 @@ static enum renderer_init_result load_file(
         fclose(file);
         free(fullpath);
         free(buffer);
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
 
     fprintf(stderr, "[renderer] (INFO) loaded file %s\n", fullpath);
@@ -191,11 +198,11 @@ static enum renderer_init_result load_file(
     *size_out = (size_t)tell_size;
     *buffer_out = buffer;
 
-    return RENDERER_INIT_OKAY;
+    return RENDERER_OKAY;
 }
 
 /* initialize GLFW and create a window */
-static enum renderer_init_result setup_glfw()
+static enum renderer_result setup_glfw()
 {
     glfwInit();
     renderer.glfw_needs_terminate = true;
@@ -207,10 +214,10 @@ static enum renderer_init_result setup_glfw()
     if (!renderer.window) {
         fprintf(stderr, "[renderer] glfwCreateWindow() failed\n");
         renderer_terminate();
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
 
-    return RENDERER_INIT_OKAY;
+    return RENDERER_OKAY;
 }
 
 /* callback  */
@@ -224,7 +231,7 @@ static void print_missing_thing(
 }
 
 /* initialize the vulkan instance and extensions */
-static enum renderer_init_result setup_instance()
+static enum renderer_result setup_instance()
 {
     VkApplicationInfo app_info = {
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -296,7 +303,7 @@ static enum renderer_init_result setup_instance()
         sorted_set_destroy(available_extensions_set);
         sorted_set_destroy(extensions_set);
         renderer_terminate();
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
 
     sorted_set_destroy(missing_extensions_set);
@@ -334,7 +341,7 @@ static enum renderer_init_result setup_instance()
         sorted_set_destroy(layers_set);
         sorted_set_destroy(available_layers_set);
         renderer_terminate();
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
     sorted_set_destroy(available_layers_set);
     sorted_set_destroy(missing_layers_set);
@@ -345,6 +352,8 @@ static enum renderer_init_result setup_instance()
 
     size_t n_layers;
     const char ** layers = sorted_set_flatten_keys(layers_set, &n_layers);
+    renderer.n_layers = n_layers;
+    renderer.layers = layers;
 
     VkInstanceCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
@@ -358,9 +367,8 @@ static enum renderer_init_result setup_instance()
     VkResult result = vkCreateInstance(&create_info, NULL, &renderer.instance);
 
     free(extensions);
-    free(layers);
     sorted_set_destroy(extensions_set);
-    sorted_set_destroy(layers_set);
+    sorted_set_destroy_except_keys(layers_set);
 
     if (result != VK_SUCCESS) {
         fprintf(
@@ -369,14 +377,14 @@ static enum renderer_init_result setup_instance()
                 result
             );
         renderer_terminate();
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
 
-    return RENDERER_INIT_OKAY;
+    return RENDERER_OKAY;
 }
 
 /* have GLFW create a window sruface */
-static enum renderer_init_result setup_window_surface()
+static enum renderer_result setup_window_surface()
 {
     VkResult result = glfwCreateWindowSurface(
             renderer.instance,
@@ -392,10 +400,10 @@ static enum renderer_init_result setup_window_surface()
                 result
             );
         renderer_terminate();
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
 
-    return RENDERER_INIT_OKAY;
+    return RENDERER_OKAY;
 }
 
 /* find appropriate queue families (using a candidate physical device)
@@ -403,7 +411,7 @@ static enum renderer_init_result setup_window_surface()
  * this doesn't terminate on error because we might be able to try again with
  * a different device
  */
-static enum renderer_init_result setup_queue_families(
+static enum renderer_result setup_queue_families(
         VkPhysicalDevice candidate)
 {
     uint32_t n_queue_families;
@@ -440,7 +448,7 @@ static enum renderer_init_result setup_queue_families(
                 stderr,
                 "[renderer] (INFO) candidate device lacks graphics bit\n"
             );
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
 
     if (!renderer.queue_families.present.exists) {
@@ -448,14 +456,14 @@ static enum renderer_init_result setup_queue_families(
                 stderr,
                 "[renderer] (INFO) candidate device cannot present to surface\n"
             );
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
 
-    return RENDERER_INIT_OKAY;
+    return RENDERER_OKAY;
 }
 
 /* set up the swap chain */
-static enum renderer_init_result setup_swap_chain()
+static enum renderer_result setup_swap_chain()
 {
     /* prefer SRGB R8G8B8 */
     renderer.chain_details.format = renderer.chain_details.formats[0];
@@ -533,6 +541,14 @@ static enum renderer_init_result setup_swap_chain()
         .oldSwapchain = VK_NULL_HANDLE
     };
 
+    if (renderer.chain_details.capabilities.maxImageCount > 0) {
+        if (create_info.minImageCount >
+                renderer.chain_details.capabilities.maxImageCount) {
+            create_info.minImageCount =
+                renderer.chain_details.capabilities.maxImageCount;
+        }
+    }
+
     if (renderer.queue_families.graphics.index !=
             renderer.queue_families.present.index) {
         create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
@@ -555,7 +571,7 @@ static enum renderer_init_result setup_swap_chain()
                 result
             );
         renderer_terminate();
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
 
     vkGetSwapchainImagesKHR(
@@ -574,7 +590,7 @@ static enum renderer_init_result setup_swap_chain()
             renderer.swap_chain_images
         );
 
-    return RENDERER_INIT_OKAY;
+    return RENDERER_OKAY;
 }
 
 /* test if this candidate supports the window surface/swap chain
@@ -582,7 +598,7 @@ static enum renderer_init_result setup_swap_chain()
  * this doesn't terminate on error because it might be called with another
  * candidate
  */
-static enum renderer_init_result setup_swap_chain_details(
+static enum renderer_result setup_swap_chain_details(
         VkPhysicalDevice candidate)
 {
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
@@ -637,26 +653,26 @@ static enum renderer_init_result setup_swap_chain_details(
 
     if (renderer.chain_details.n_formats == 0) {
         fprintf(stderr, "[renderer] (INFO) device has no formats for this surface\n");
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
 
     if (renderer.chain_details.n_present_modes == 0) {
         fprintf(stderr, "[renderer] (INFO) device has no present modes for this surface\n");
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
 
-    return RENDERER_INIT_OKAY;
+    return RENDERER_OKAY;
 }
 
 /* pick a physical device */
-static enum renderer_init_result setup_physical_device()
+static enum renderer_result setup_physical_device()
 {
     uint32_t n_devices;
     vkEnumeratePhysicalDevices(renderer.instance, &n_devices, NULL);
     if (n_devices == 0) {
         fprintf(stderr, "[renderer] no devices have Vulkan support\n");
         renderer_terminate();
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
 
     VkPhysicalDevice * devices = malloc(sizeof(*devices) * n_devices);
@@ -733,7 +749,7 @@ static enum renderer_init_result setup_physical_device()
                 "[renderer] no suitable physical dveices found\n"
             );
         renderer_terminate();
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
 
     /* run it again now that we've picked */
@@ -752,12 +768,13 @@ static enum renderer_init_result setup_physical_device()
 
     renderer.physical_device = candidate;
 
-    return RENDERER_INIT_OKAY;
+    return RENDERER_OKAY;
 }
 
 /* create a logical device */
-static enum renderer_init_result setup_logical_device()
+static enum renderer_result setup_logical_device()
 {
+    // TODO: create for each unique queue family
     VkDeviceQueueCreateInfo queue_create_info[] = {
         {
             .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
@@ -780,7 +797,9 @@ static enum renderer_init_result setup_logical_device()
             sizeof(queue_create_info) / sizeof(*queue_create_info),
         .pEnabledFeatures = &device_features,
         .enabledExtensionCount = sizeof(extensions) / sizeof(*extensions),
-        .ppEnabledExtensionNames = extensions
+        .ppEnabledExtensionNames = extensions,
+        .enabledLayerCount = renderer.n_layers,
+        .ppEnabledLayerNames = renderer.layers
     };
 
     VkResult result = vkCreateDevice(
@@ -797,7 +816,7 @@ static enum renderer_init_result setup_logical_device()
                 result
             );
         renderer_terminate();
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
 
     vkGetDeviceQueue(
@@ -807,11 +826,18 @@ static enum renderer_init_result setup_logical_device()
             &renderer.graphics_queue
         );
 
-    return RENDERER_INIT_OKAY;
+    vkGetDeviceQueue(
+            renderer.device,
+            renderer.queue_families.present.index,
+            0,
+            &renderer.present_queue
+        );
+
+    return RENDERER_OKAY;
 }
 
 /* create image views for every image in the swap chain */
-static enum renderer_init_result setup_image_views()
+static enum renderer_result setup_image_views()
 {
     renderer.swap_chain_image_views = calloc(
             renderer.n_swap_chain_images,
@@ -853,26 +879,26 @@ static enum renderer_init_result setup_image_views()
                     result
                 );
             renderer_terminate();
-            return RENDERER_INIT_ERROR;
+            return RENDERER_ERROR;
         }
     }
 
-    return RENDERER_INIT_OKAY;
+    return RENDERER_OKAY;
 }
 
 /* create the graphics pipeline(s) */
-static enum renderer_init_result setup_pipeline()
+static enum renderer_result setup_pipeline()
 {
     char * vertex_shader_blob = NULL,
          * fragment_shader_blob = NULL;
     size_t vertex_shader_blob_size,
            fragment_shader_blob_size;
 
-    enum renderer_init_result result1 = load_file(
+    enum renderer_result result1 = load_file(
                 "vertex.spv",
                 &vertex_shader_blob,
                 &vertex_shader_blob_size);
-    enum renderer_init_result result2 = load_file(
+    enum renderer_result result2 = load_file(
                 "fragment.spv",
                 &fragment_shader_blob,
                 &fragment_shader_blob_size);
@@ -889,7 +915,7 @@ static enum renderer_init_result setup_pipeline()
             free(fragment_shader_blob);
         }
         renderer_terminate();
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
 
     VkShaderModule vertex_module,
@@ -955,7 +981,7 @@ static enum renderer_init_result setup_pipeline()
         vkDestroyShaderModule(renderer.device, vertex_module, NULL);
         vkDestroyShaderModule(renderer.device, fragment_module, NULL);
         renderer_terminate();
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
 
     VkRenderPassCreateInfo render_pass_info = {
@@ -985,6 +1011,17 @@ static enum renderer_init_result setup_pipeline()
                     }
                 }
             }
+        },
+        .dependencyCount = 1,
+        .pDependencies = (VkSubpassDependency[]) {
+            {
+                .srcSubpass = VK_SUBPASS_EXTERNAL,
+                .dstSubpass = 0,
+                .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .srcAccessMask = 0,
+                .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+            }
         }
     };
 
@@ -1000,7 +1037,7 @@ static enum renderer_init_result setup_pipeline()
         vkDestroyShaderModule(renderer.device, vertex_module, NULL);
         vkDestroyShaderModule(renderer.device, fragment_module, NULL);
         renderer_terminate();
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
 
     VkGraphicsPipelineCreateInfo pipeline_info = {
@@ -1083,12 +1120,19 @@ static enum renderer_init_result setup_pipeline()
         .pColorBlendState = &(VkPipelineColorBlendStateCreateInfo) {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
             .logicOpEnable = VK_FALSE,
+            .logicOp = VK_LOGIC_OP_COPY,
             .attachmentCount = 1,
             .pAttachments = (VkPipelineColorBlendAttachmentState[]) {
                 {
+                    .colorWriteMask =
+                        VK_COLOR_COMPONENT_R_BIT |
+                        VK_COLOR_COMPONENT_G_BIT |
+                        VK_COLOR_COMPONENT_B_BIT |
+                        VK_COLOR_COMPONENT_A_BIT,
                     .blendEnable = VK_FALSE
                 }
-            }
+            },
+            .blendConstants = { 0.0f, 0.0f, 0.0f, 0.0f }
         },
         .layout = renderer.layout,
         .renderPass = renderer.render_pass,
@@ -1114,17 +1158,17 @@ static enum renderer_init_result setup_pipeline()
         vkDestroyShaderModule(renderer.device, vertex_module, NULL);
         vkDestroyShaderModule(renderer.device, fragment_module, NULL);
         renderer_terminate();
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
 
     vkDestroyShaderModule(renderer.device, vertex_module, NULL);
     vkDestroyShaderModule(renderer.device, fragment_module, NULL);
 
-    return RENDERER_INIT_OKAY;
+    return RENDERER_OKAY;
 }
 
 /* create the framebuffers */
-static enum renderer_init_result setup_framebuffers()
+static enum renderer_result setup_framebuffers()
 {
     renderer.framebuffers = calloc(
             renderer.n_swap_chain_images, sizeof(*renderer.framebuffers));
@@ -1157,15 +1201,14 @@ static enum renderer_init_result setup_framebuffers()
                     result
                 );
             renderer_terminate();
-            return RENDERER_INIT_ERROR;
+            return RENDERER_ERROR;
         }
     }
 
-    return RENDERER_INIT_OKAY;
+    return RENDERER_OKAY;
 }
-
 /* create the command pool and buffer */
-static enum renderer_init_result setup_command_pool()
+static enum renderer_result setup_command_pool()
 {
     VkCommandPoolCreateInfo pool_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -1183,7 +1226,7 @@ static enum renderer_init_result setup_command_pool()
                 result
             );
         renderer_terminate();
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
 
     VkCommandBufferAllocateInfo buffer_info = {
@@ -1203,16 +1246,238 @@ static enum renderer_init_result setup_command_pool()
                 result
             );
         renderer_terminate();
-        return RENDERER_INIT_ERROR;
+        return RENDERER_ERROR;
     }
 
-    return RENDERER_INIT_OKAY;
+    return RENDERER_OKAY;
+}
+
+/* set up sync objects */
+static enum renderer_result setup_sync_objects()
+{
+    VkSemaphoreCreateInfo semaphore_info = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
+    };
+
+    VkResult result = vkCreateSemaphore(
+            renderer.device,
+            &semaphore_info,
+            NULL,
+            &renderer.sync.image_available
+        );
+
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkCreateSemaphore() failed (%d)\n",
+                result
+            );
+        return RENDERER_ERROR;
+    }
+
+    result = vkCreateSemaphore(
+            renderer.device,
+            &semaphore_info,
+            NULL,
+            &renderer.sync.render_finished
+        );
+
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkCreateSemaphore() failed (%d)\n",
+                result
+            );
+        return RENDERER_ERROR;
+    }
+
+    VkFenceCreateInfo fence_info = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .flags = VK_FENCE_CREATE_SIGNALED_BIT /* start signalled because the
+                                               * first frame should not wait
+                                               */
+    };
+
+    result = vkCreateFence(
+            renderer.device,
+            &fence_info,
+            NULL,
+            &renderer.sync.in_flight
+        );
+
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkCreateFence() failed (%d)\n",
+                result
+            );
+        return RENDERER_ERROR;
+    }
+
+    return RENDERER_OKAY;
+}
+
+/* record commands into a command buffer */
+static enum renderer_result record_command_buffer(
+        VkCommandBuffer command_buffer,
+        uint32_t image_index
+    )
+{
+    VkCommandBufferBeginInfo begin_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
+    };
+
+    VkResult result = vkBeginCommandBuffer(command_buffer, &begin_info);
+
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkBeginCommandBuffer() failed (%d)\n",
+                result
+            );
+        return RENDERER_ERROR;
+    }
+
+    VkRenderPassBeginInfo render_pass_begin_info = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .renderPass = renderer.render_pass,
+        .framebuffer = renderer.framebuffers[image_index],
+        .renderArea = {
+            .offset = { 0, 0 },
+            .extent = renderer.chain_details.extent
+        },
+        .clearValueCount = 1,
+        .pClearValues = (VkClearValue[]) {
+            {
+                .color = { { 1.0f, 1.0f, 1.0f, 1.0f } }
+            }
+        }
+    };
+
+    vkCmdBeginRenderPass(
+            command_buffer,
+            &render_pass_begin_info,
+            VK_SUBPASS_CONTENTS_INLINE
+        );
+
+    vkCmdBindPipeline(
+            command_buffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            renderer.pipeline
+        );
+
+    vkCmdSetViewport(
+            command_buffer,
+            0,
+            1,
+            &(VkViewport) {
+                .x = 0.0f,
+                .y = 0.0f,
+                .width = (float)renderer.chain_details.extent.width,
+                .height = (float)renderer.chain_details.extent.height,
+                .minDepth = 0.0f,
+                .maxDepth = 1.0f
+            }
+        );
+
+    vkCmdSetScissor(
+            command_buffer,
+            0,
+            1,
+            &(VkRect2D) {
+                .offset = { 0, 0 },
+                .extent = renderer.chain_details.extent
+            }
+        );
+        
+    vkCmdDraw(command_buffer, 3, 1, 0, 0);
+
+    vkCmdEndRenderPass(command_buffer);
+
+    result = vkEndCommandBuffer(command_buffer);
+
+    if (result != VK_SUCCESS) {
+        return RENDERER_ERROR;
+    }
+
+    return RENDERER_OKAY;
+}
+
+/* draw a frame */
+static enum renderer_result renderer_draw_frame()
+{
+    vkWaitForFences(
+            renderer.device, 1, &renderer.sync.in_flight, VK_TRUE, UINT64_MAX);
+    vkResetFences(renderer.device, 1, &renderer.sync.in_flight);
+
+    uint32_t image_index;
+    vkAcquireNextImageKHR(
+            renderer.device,
+            renderer.swap_chain,
+            UINT64_MAX,
+            renderer.sync.image_available,
+            VK_NULL_HANDLE,
+            &image_index
+        );
+
+    vkResetCommandBuffer(renderer.command_buffer, 0);
+    if (record_command_buffer(renderer.command_buffer, image_index)) {
+        return RENDERER_ERROR;
+    }
+
+    VkSubmitInfo submit_info = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = (VkSemaphore[]) {
+            renderer.sync.image_available
+        },
+        .pWaitDstStageMask = (VkPipelineStageFlags[]) {
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+        },
+        .commandBufferCount = 1,
+        .pCommandBuffers = (VkCommandBuffer[]) {
+            renderer.command_buffer
+        },
+        .signalSemaphoreCount = 1,
+        .pSignalSemaphores = (VkSemaphore[]) {
+            renderer.sync.render_finished
+        }
+    };
+
+    VkResult result = vkQueueSubmit(
+            renderer.graphics_queue, 1, &submit_info, renderer.sync.in_flight);
+
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkQueueSubmit() failed (%d)\n",
+                result
+            );
+        return RENDERER_ERROR;
+    }
+
+    VkPresentInfoKHR present_info = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = (VkSemaphore[]) {
+            renderer.sync.render_finished
+        },
+        .swapchainCount = 1,
+        .pSwapchains = (VkSwapchainKHR[]) {
+            renderer.swap_chain
+        },
+        .pImageIndices = &image_index
+    };
+
+    vkQueuePresentKHR(renderer.present_queue, &present_info);
+
+    return RENDERER_OKAY;
 }
 
 /* initialize the renderer */
-enum renderer_init_result renderer_init()
+enum renderer_result renderer_init()
 {
-    enum renderer_init_result result;
+    enum renderer_result result;
 
     result = setup_glfw();
     if (result) return result;
@@ -1244,13 +1509,34 @@ enum renderer_init_result renderer_init()
     result = setup_command_pool();
     if (result) return result;
 
+    result = setup_sync_objects();
+    if (result) return result;
+
     renderer.initialized = true;
 
-    return RENDERER_INIT_OKAY;
+    return RENDERER_OKAY;
 }
 
 void renderer_terminate()
 {
+    if (renderer.sync.image_available) {
+        vkDestroySemaphore(
+                renderer.device, renderer.sync.image_available, NULL);
+        renderer.sync.image_available = NULL;
+    }
+
+    if (renderer.sync.render_finished) {
+        vkDestroySemaphore(
+                renderer.device, renderer.sync.render_finished, NULL);
+        renderer.sync.render_finished = NULL;
+    }
+
+    if (renderer.sync.in_flight) {
+        vkDestroyFence(
+                renderer.device, renderer.sync.in_flight, NULL);
+        renderer.sync.in_flight = NULL;
+    }
+
     if (renderer.command_pool) {
         vkDestroyCommandPool(renderer.device, renderer.command_pool, NULL);
     }
@@ -1335,6 +1621,9 @@ void renderer_terminate()
     }
 
     if (renderer.layers) {
+        for (size_t i = 0; i < renderer.n_layers; i++) {
+            free((char *)renderer.layers[i]);
+        }
         free(renderer.layers);
         renderer.layers = NULL;
         renderer.n_layers = 0;
@@ -1360,5 +1649,9 @@ void renderer_loop()
     }
     while (!glfwWindowShouldClose(renderer.window)) {
         glfwPollEvents();
+        if (renderer_draw_frame()) {
+            return;
+        }
     }
+    vkDeviceWaitIdle(renderer.device);
 }
