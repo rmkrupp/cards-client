@@ -61,7 +61,7 @@ avoid the OpenMP dependency.
 
  - [ ] Configuration of graphical settings (e.g. resolution, effects, etc.)
 
- - [ ] Loading configuration and settings
+ - [ ] Loading configuration, settings, and rules
 
   - [ ] Above, but for the server
 
@@ -81,3 +81,9 @@ avoid the OpenMP dependency.
        "narration")
 
  - [ ] Manage card and font assets
+
+   - [x] generate-dfield tool with compressed dfields
+
+   - [ ] generate non-square glyphs
+
+   - [ ] automatically generate a range of glyphs from a font
