@@ -109,11 +109,17 @@ struct renderer {
     VkPipelineLayout layout;
     VkPipeline pipeline;
 
-    VkCommandPool command_pool; /* these two created by setup_command_pool() */
+    VkCommandPool command_pool,
+                  transient_command_pool; /* these three created by
+                                           * setup_command_pool()
+                                           */
     VkCommandBuffer * command_buffers; /* indexed by current_frame */
 
     VkBuffer vertex_buffer; /* the vertex buffer */
     VkDeviceMemory vertex_buffer_memory;
+
+    VkBuffer index_buffer;
+    VkDeviceMemory index_buffer_memory;
 
     struct {
         VkSemaphore image_available, /* have we acquired an image to render
@@ -136,9 +142,14 @@ struct vertex {
 };
 
 struct vertex vertices[] = {
-    { {0.0f, -0.5f}, {1.0f, 0.0f, 0.0f} },
-    { {0.5f, 0.5f}, {0.0f, 1.0f, 0.0f} },
-    { {-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f} }
+    { {-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f} },
+    { {0.5f, -0.5f}, {0.0f, 1.0f, 0.0f} },
+    { {0.5f, 0.5f}, {0.0f, 0.0f, 1.0f} },
+    { {-0.5f, 0.5f}, {1.0f, 0.0f, 1.0f} }
+};
+
+uint16_t indices[] = {
+    0, 1, 2, 2, 3, 0
 };
 
 /*****************************************************************************
@@ -182,6 +193,21 @@ static enum renderer_result setup_queue_families(
         VkPhysicalDevice candidate);
 static enum renderer_result setup_swap_chain_details(
         VkPhysicalDevice candidate);
+static enum renderer_result find_memory_type(
+        uint32_t filter, VkMemoryPropertyFlags properties, uint32_t * out);
+static enum renderer_result create_buffer(
+        VkBuffer * buffer,
+        VkDeviceMemory * buffer_memory,
+        VkDeviceSize size,
+        VkBufferUsageFlags usage,
+        VkMemoryPropertyFlags properties
+    );
+static enum renderer_result copy_buffer(
+        VkBuffer src, VkBuffer dst, VkDeviceSize size
+    );
+
+static enum renderer_result setup_vertex_buffer();
+static enum renderer_result setup_index_buffer();
 
 /*
  * UTILITY FUNCTIONS
@@ -1360,6 +1386,7 @@ static enum renderer_result setup_framebuffers()
     return RENDERER_OKAY;
 }
 
+/* helper function for create_buffer */
 static enum renderer_result find_memory_type(
         uint32_t filter, VkMemoryPropertyFlags properties, uint32_t * out)
 {
@@ -1377,6 +1404,269 @@ static enum renderer_result find_memory_type(
     }
 
     return RENDERER_ERROR;
+}
+
+/* create a VkBuffer and a VkDeviceMemory */
+static enum renderer_result create_buffer(
+        VkBuffer * buffer,
+        VkDeviceMemory * buffer_memory,
+        VkDeviceSize size,
+        VkBufferUsageFlags usage,
+        VkMemoryPropertyFlags properties
+    )
+{
+    VkBufferCreateInfo buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = size,
+        .usage = usage,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+    };
+
+    VkResult result = vkCreateBuffer(
+            renderer.device, &buffer_info, NULL, buffer);
+
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkCreateBuffer() failed (%d)\n",
+                result
+            );
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    VkMemoryRequirements memory_requirements;
+    vkGetBufferMemoryRequirements(
+            renderer.device, *buffer, &memory_requirements);
+
+    uint32_t memory_type;
+    if (find_memory_type(
+                memory_requirements.memoryTypeBits,
+                properties,
+                &memory_type
+            )) {
+        fprintf(
+                stderr,
+                "[renderer] find_memory_type() found no suitable types\n"
+            );
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    VkMemoryAllocateInfo allocate_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = memory_requirements.size,
+        .memoryTypeIndex = memory_type
+    };
+
+    /* TODO: switch to a "real" allocator like VMA, or otherwise make
+     *       allocation more intelligent
+     */
+
+    result = vkAllocateMemory(
+            renderer.device,
+            &allocate_info,
+            NULL,
+            buffer_memory
+        );
+
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkAllocateMemory() failed (%d)\n",
+                result
+            );
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    vkBindBufferMemory(renderer.device, *buffer, *buffer_memory, 0);
+
+    return RENDERER_OKAY;
+}
+
+static enum renderer_result copy_buffer(
+        VkBuffer src, VkBuffer dst, VkDeviceSize size
+    )
+{
+    VkCommandBufferAllocateInfo allocate_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandPool = renderer.transient_command_pool,
+        .commandBufferCount = 1
+    };
+
+    VkCommandBuffer command_buffer;
+    VkResult result = vkAllocateCommandBuffers(
+            renderer.device, &allocate_info, &command_buffer);
+
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkAllocateCommandBuffers() failed (%d)\n",
+                result
+            );
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    VkCommandBufferBeginInfo begin_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+    };
+
+    result = vkBeginCommandBuffer(command_buffer, &begin_info);
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkBeginCommandBuffer() failed (%d)\n",
+                result
+            );
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    VkBufferCopy region = {
+        .srcOffset = 0,
+        .dstOffset = 0,
+        .size = size
+    };
+
+    vkCmdCopyBuffer(command_buffer, src, dst, 1, &region);
+    vkEndCommandBuffer(command_buffer);
+
+    VkSubmitInfo submit_info = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &command_buffer
+    };
+
+    result = vkQueueSubmit(
+            renderer.graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkQueueSubmit() failed (%d)\n",
+                result
+            );
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    /* NOTE: use a fence if we schedule multiple */
+    vkQueueWaitIdle(renderer.graphics_queue);
+
+    vkFreeCommandBuffers(
+            renderer.device,
+            renderer.transient_command_pool,
+            1,
+            &command_buffer
+        );
+
+    return RENDERER_OKAY;
+}
+
+/* create and copy vertices */
+static enum renderer_result setup_vertex_buffer()
+{
+    VkDeviceSize size = sizeof(vertices);
+
+    VkBuffer staging_buffer = NULL;
+    VkDeviceMemory staging_buffer_memory = NULL;
+
+    if (create_buffer(
+            &staging_buffer,
+            &staging_buffer_memory,
+            size,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+        )) {
+        return RENDERER_ERROR;
+    }
+
+    void * data;
+    vkMapMemory(renderer.device, staging_buffer_memory, 0, size, 0, &data);
+
+    memcpy(data, vertices, size);
+
+    vkUnmapMemory(renderer.device, staging_buffer_memory);
+
+    if (create_buffer(
+            &renderer.vertex_buffer,
+            &renderer.vertex_buffer_memory,
+            size,
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+        )) {
+        vkDestroyBuffer(renderer.device, staging_buffer, NULL);
+        vkFreeMemory(renderer.device, staging_buffer_memory, NULL);
+        return RENDERER_ERROR;
+    }
+
+    if (copy_buffer(staging_buffer, renderer.vertex_buffer, size)) {
+        vkDestroyBuffer(renderer.device, staging_buffer, NULL);
+        vkFreeMemory(renderer.device, staging_buffer_memory, NULL);
+        return RENDERER_ERROR;
+    }
+
+    vkDestroyBuffer(renderer.device, staging_buffer, NULL);
+    vkFreeMemory(renderer.device, staging_buffer_memory, NULL);
+
+    return RENDERER_OKAY;
+}
+
+/* create and copy indices */
+static enum renderer_result setup_index_buffer()
+{
+    VkDeviceSize size = sizeof(indices);
+
+    VkBuffer staging_buffer = NULL;
+    VkDeviceMemory staging_buffer_memory = NULL;
+
+    if (create_buffer(
+            &staging_buffer,
+            &staging_buffer_memory,
+            size,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+        )) {
+        return RENDERER_ERROR;
+    }
+
+    void * data;
+    vkMapMemory(renderer.device, staging_buffer_memory, 0, size, 0, &data);
+
+    memcpy(data, indices, size);
+
+    vkUnmapMemory(renderer.device, staging_buffer_memory);
+
+    if (create_buffer(
+            &renderer.index_buffer,
+            &renderer.index_buffer_memory,
+            size,
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+        )) {
+        vkDestroyBuffer(renderer.device, staging_buffer, NULL);
+        vkFreeMemory(renderer.device, staging_buffer_memory, NULL);
+        return RENDERER_ERROR;
+    }
+
+    if (copy_buffer(staging_buffer, renderer.index_buffer, size)) {
+        vkDestroyBuffer(renderer.device, staging_buffer, NULL);
+        vkFreeMemory(renderer.device, staging_buffer_memory, NULL);
+        return RENDERER_ERROR;
+    }
+
+    vkDestroyBuffer(renderer.device, staging_buffer, NULL);
+    vkFreeMemory(renderer.device, staging_buffer_memory, NULL);
+
+    return RENDERER_OKAY;
 }
 
 /* create the command pool and buffer */
@@ -1401,88 +1691,32 @@ static enum renderer_result setup_command_pool()
         return RENDERER_ERROR;
     }
 
-    VkBufferCreateInfo buffer_info = {
-        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size = sizeof(vertices),
-        .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+    VkCommandPoolCreateInfo transient_pool_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+        .queueFamilyIndex = renderer.queue_families.graphics.index
     };
 
-    result = vkCreateBuffer(
-            renderer.device, &buffer_info, NULL, &renderer.vertex_buffer);
-
-    if (result != VK_SUCCESS) {
-        fprintf(
-                stderr,
-                "[renderer] vkCreateBuffer() failed (%d)\n",
-                result
-            );
-        renderer_terminate();
-        return RENDERER_ERROR;
-    }
-
-    VkMemoryRequirements memory_requirements;
-    vkGetBufferMemoryRequirements(
-            renderer.device, renderer.vertex_buffer, &memory_requirements);
-
-    uint32_t memory_type;
-    if (find_memory_type(
-                memory_requirements.memoryTypeBits,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                &memory_type
-            )) {
-        fprintf(
-                stderr,
-                "[renderer] find_memory_type() found no suitable types\n"
-            );
-        renderer_terminate();
-        return RENDERER_ERROR;
-    }
-
-    VkMemoryAllocateInfo alloc_info = {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .allocationSize = memory_requirements.size,
-        .memoryTypeIndex = memory_type
-    };
-
-    result = vkAllocateMemory(
+    result = vkCreateCommandPool(
             renderer.device,
-            &alloc_info,
+            &transient_pool_info,
             NULL,
-            &renderer.vertex_buffer_memory
+            &renderer.transient_command_pool
         );
 
     if (result != VK_SUCCESS) {
         fprintf(
                 stderr,
-                "[renderer] vkAllocateMemory() failed (%d)\n",
+                "[renderer] vkCreateCommandPool() failed (%d)\n",
                 result
             );
         renderer_terminate();
         return RENDERER_ERROR;
     }
 
-    vkBindBufferMemory(
-            renderer.device,
-            renderer.vertex_buffer,
-            renderer.vertex_buffer_memory,
-            0
-        );
-
-    void * data;
-    vkMapMemory(
-            renderer.device,
-            renderer.vertex_buffer_memory,
-            0,
-            buffer_info.size,
-            0,
-            &data
-        );
-
-    memcpy(data, vertices, (size_t) buffer_info.size);
-
-    vkUnmapMemory(renderer.device, renderer.vertex_buffer_memory);
+    if (setup_vertex_buffer() || setup_index_buffer()) {
+        return RENDERER_ERROR;
+    }
 
     renderer.command_buffers = malloc(
             sizeof(*renderer.command_buffers) *
@@ -1643,6 +1877,13 @@ static enum renderer_result record_command_buffer(
             }
         );
 
+    vkCmdBindIndexBuffer(
+            command_buffer,
+            renderer.index_buffer,
+            0,
+            VK_INDEX_TYPE_UINT16
+        );
+
     vkCmdSetViewport(
             command_buffer,
             0,
@@ -1667,10 +1908,11 @@ static enum renderer_result record_command_buffer(
             }
         );
         
-    vkCmdDraw(
+    vkCmdDrawIndexed(
             command_buffer,
-            (uint32_t)sizeof(vertices) / sizeof(*vertices),
+            (uint32_t)(sizeof(indices) / sizeof(*indices)),
             1,
+            0,
             0,
             0
         );
@@ -2012,9 +2254,25 @@ void renderer_terminate()
         renderer.vertex_buffer_memory = NULL;
     }
 
+    if (renderer.index_buffer) {
+        vkDestroyBuffer(renderer.device, renderer.index_buffer, NULL);
+        renderer.index_buffer = NULL;
+    }
+
+    if (renderer.index_buffer_memory) {
+        vkFreeMemory(renderer.device, renderer.index_buffer_memory, NULL);
+        renderer.index_buffer_memory = NULL;
+    }
+
     if (renderer.command_pool) {
         vkDestroyCommandPool(renderer.device, renderer.command_pool, NULL);
         renderer.command_pool = NULL;
+    }
+
+    if (renderer.transient_command_pool) {
+        vkDestroyCommandPool(
+                renderer.device, renderer.transient_command_pool, NULL);
+        renderer.transient_command_pool = NULL;
     }
 
     if (renderer.framebuffers) {
