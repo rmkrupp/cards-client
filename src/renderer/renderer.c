@@ -32,7 +32,9 @@
 #include <GLFW/glfw3.h>
 
 #include "util/sorted_set.h"
+#include "quat.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -110,6 +112,9 @@ struct renderer {
     VkCommandPool command_pool; /* these two created by setup_command_pool() */
     VkCommandBuffer * command_buffers; /* indexed by current_frame */
 
+    VkBuffer vertex_buffer; /* the vertex buffer */
+    VkDeviceMemory vertex_buffer_memory;
+
     struct {
         VkSemaphore image_available, /* have we acquired an image to render
                                       * to?
@@ -124,6 +129,17 @@ struct renderer {
                              */
 
 } renderer = { };
+
+struct vertex {
+    struct vec2 position;
+    struct vec3 color;
+};
+
+struct vertex vertices[] = {
+    { {0.0f, -0.5f}, {1.0f, 0.0f, 0.0f} },
+    { {0.5f, 0.5f}, {0.0f, 1.0f, 0.0f} },
+    { {-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f} }
+};
 
 /*****************************************************************************
  *                           FUNCTIONS IN THIS FILE                          *
@@ -1180,7 +1196,31 @@ static enum renderer_result setup_pipeline()
             }
         },
         .pVertexInputState = &(VkPipelineVertexInputStateCreateInfo) {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+            .vertexBindingDescriptionCount = 1,
+            .pVertexBindingDescriptions = (VkVertexInputBindingDescription[]) {
+                {
+                    .binding = 0,
+                    .stride = sizeof(struct vertex),
+                    .inputRate = VK_VERTEX_INPUT_RATE_VERTEX
+                }
+            },
+            .vertexAttributeDescriptionCount = 2,
+            .pVertexAttributeDescriptions =
+                (VkVertexInputAttributeDescription[]) {
+                {
+                    .binding = 0,
+                    .location = 0,
+                    .format = VK_FORMAT_R32G32_SFLOAT,
+                    .offset = offsetof(struct vertex, position)
+                },
+                {
+                    .binding = 0,
+                    .location = 1,
+                    .format = VK_FORMAT_R32G32B32_SFLOAT,
+                    .offset = offsetof(struct vertex, color)
+                }
+            }
         },
         .pInputAssemblyState = &(VkPipelineInputAssemblyStateCreateInfo) {
             .sType =
@@ -1319,6 +1359,26 @@ static enum renderer_result setup_framebuffers()
 
     return RENDERER_OKAY;
 }
+
+static enum renderer_result find_memory_type(
+        uint32_t filter, VkMemoryPropertyFlags properties, uint32_t * out)
+{
+    VkPhysicalDeviceMemoryProperties memory_properties;
+    vkGetPhysicalDeviceMemoryProperties(
+            renderer.physical_device, &memory_properties);
+    for (uint32_t i = 0 ; i < memory_properties.memoryTypeCount; i++) {
+        if (filter & (1 << i)) {
+            if ((memory_properties.memoryTypes[i].propertyFlags & properties)
+                    == properties) {
+                *out = i;
+                return RENDERER_OKAY;
+            }
+        }
+    }
+
+    return RENDERER_ERROR;
+}
+
 /* create the command pool and buffer */
 static enum renderer_result setup_command_pool()
 {
@@ -1341,12 +1401,95 @@ static enum renderer_result setup_command_pool()
         return RENDERER_ERROR;
     }
 
+    VkBufferCreateInfo buffer_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = sizeof(vertices),
+        .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+    };
+
+    result = vkCreateBuffer(
+            renderer.device, &buffer_info, NULL, &renderer.vertex_buffer);
+
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkCreateBuffer() failed (%d)\n",
+                result
+            );
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    VkMemoryRequirements memory_requirements;
+    vkGetBufferMemoryRequirements(
+            renderer.device, renderer.vertex_buffer, &memory_requirements);
+
+    uint32_t memory_type;
+    if (find_memory_type(
+                memory_requirements.memoryTypeBits,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                &memory_type
+            )) {
+        fprintf(
+                stderr,
+                "[renderer] find_memory_type() found no suitable types\n"
+            );
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    VkMemoryAllocateInfo alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = memory_requirements.size,
+        .memoryTypeIndex = memory_type
+    };
+
+    result = vkAllocateMemory(
+            renderer.device,
+            &alloc_info,
+            NULL,
+            &renderer.vertex_buffer_memory
+        );
+
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkAllocateMemory() failed (%d)\n",
+                result
+            );
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    vkBindBufferMemory(
+            renderer.device,
+            renderer.vertex_buffer,
+            renderer.vertex_buffer_memory,
+            0
+        );
+
+    void * data;
+    vkMapMemory(
+            renderer.device,
+            renderer.vertex_buffer_memory,
+            0,
+            buffer_info.size,
+            0,
+            &data
+        );
+
+    memcpy(data, vertices, (size_t) buffer_info.size);
+
+    vkUnmapMemory(renderer.device, renderer.vertex_buffer_memory);
+
     renderer.command_buffers = malloc(
             sizeof(*renderer.command_buffers) *
             renderer.config.max_frames_in_flight
         );
 
-    VkCommandBufferAllocateInfo buffer_info = {
+    VkCommandBufferAllocateInfo command_buffer_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool = renderer.command_pool,
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
@@ -1354,7 +1497,7 @@ static enum renderer_result setup_command_pool()
     };
 
     result = vkAllocateCommandBuffers(
-            renderer.device, &buffer_info, renderer.command_buffers);
+            renderer.device, &command_buffer_info, renderer.command_buffers);
 
     if (result != VK_SUCCESS) {
         fprintf(
@@ -1488,6 +1631,18 @@ static enum renderer_result record_command_buffer(
             renderer.pipeline
         );
 
+    vkCmdBindVertexBuffers(
+            command_buffer,
+            0,
+            1,
+            (VkBuffer[]) {
+                renderer.vertex_buffer
+            },
+            (VkDeviceSize[]) {
+                0
+            }
+        );
+
     vkCmdSetViewport(
             command_buffer,
             0,
@@ -1512,7 +1667,13 @@ static enum renderer_result record_command_buffer(
             }
         );
         
-    vkCmdDraw(command_buffer, 3, 1, 0, 0);
+    vkCmdDraw(
+            command_buffer,
+            (uint32_t)sizeof(vertices) / sizeof(*vertices),
+            1,
+            0,
+            0
+        );
 
     vkCmdEndRenderPass(command_buffer);
 
@@ -1603,7 +1764,6 @@ static enum renderer_result renderer_draw_frame()
             renderer.sync[renderer.current_frame].render_finished
         }
     };
-    renderer.frame++;
 
     result = vkQueueSubmit(
             renderer.graphics_queue,
@@ -1842,8 +2002,19 @@ void renderer_terminate()
         free(renderer.sync);
     }
 
+    if (renderer.vertex_buffer) {
+        vkDestroyBuffer(renderer.device, renderer.vertex_buffer, NULL);
+        renderer.vertex_buffer = NULL;
+    }
+
+    if (renderer.vertex_buffer_memory) {
+        vkFreeMemory(renderer.device, renderer.vertex_buffer_memory, NULL);
+        renderer.vertex_buffer_memory = NULL;
+    }
+
     if (renderer.command_pool) {
         vkDestroyCommandPool(renderer.device, renderer.command_pool, NULL);
+        renderer.command_pool = NULL;
     }
 
     if (renderer.framebuffers) {
@@ -1855,6 +2026,7 @@ void renderer_terminate()
             }
         }
         free(renderer.framebuffers);
+        renderer.framebuffers = NULL;
     }
 
     if (renderer.pipeline) {
@@ -1884,10 +2056,13 @@ void renderer_terminate()
             }
         }
         free(renderer.swap_chain_images);
+        renderer.swap_chain_images = NULL;
         free(renderer.swap_chain_image_views);
+        renderer.swap_chain_image_views = NULL;
 
         vkDestroySwapchainKHR(renderer.device, renderer.swap_chain, NULL);
         renderer.swap_chain = NULL;
+        renderer.n_swap_chain_images = 0;
     }
 
     if (renderer.chain_details.formats) {
