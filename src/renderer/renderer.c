@@ -19,14 +19,11 @@
  */
 #include "renderer/renderer.h"
 
-/* TODO: configuration
- *
- *       see below comments, but also:
- *
- *        - multisampling
- *        - color space stuff?
- */
+/* TODO: configuration (see below) */
 
+/* this path is prependend to any shader lookups. together, they should point
+ * to the compiled (.spv) files.
+ */
 #ifndef SHADER_BASE_PATH
 #define SHADER_BASE_PATH "out/shaders"
 #endif /* SHADER_BASE_PATH */
@@ -43,9 +40,12 @@
 #include <assert.h>
 #include <errno.h>
 
+/* the big global stucture that holds the renderer's state */
 struct renderer {
 
-    struct renderer_configuration config;
+    struct renderer_configuration config; /* set when renderer_init() is
+                                           * called with a non-NULL config
+                                           */
 
     bool initialized; /* true if renderer_init() returned OKAY and 
                        * renderer_terminate() hasn't been called
@@ -56,10 +56,10 @@ struct renderer {
 
     VkInstance instance; /* the instance */
 
-    VkPhysicalDevice physical_device; /* the physical device */
-    VkDevice device; /* the logical device */
+    VkPhysicalDevice physical_device; /* the physical device, created by
+                                       * setup_physical_device */
 
-    size_t n_layers;
+    size_t n_layers; /* set by setup_physical_device() */
     const char ** layers;
 
     struct queue_families {
@@ -70,13 +70,16 @@ struct renderer {
           present; /* the presentation queue family */
     } queue_families; /* the queue families */
 
+    VkDevice device; /* the logical device, created by setup_logical_device()
+                      */
     VkQueue graphics_queue,
-            present_queue; /* the queues */
+            present_queue; /* the queues, created by setup_logical_device() */
 
-    VkSurfaceKHR surface; /* the window surface */
+    VkSurfaceKHR surface; /* the window surface, created by
+                           * setup_window_surface()
+                           */
 
     bool needs_recreation; /* should we recreate the swap chain? */
-    bool recreated; /* did we just recreate the swap chain? */
     bool minimized; /* are we minimized (and thus should not render?) */
 
     struct swap_chain_details {
@@ -88,36 +91,99 @@ struct renderer {
         VkPresentModeKHR present_mode; /* the present mode we picked */
         uint32_t n_present_modes;
         VkExtent2D extent;
-    } chain_details; /* information about the swap chain */
+    } chain_details; /* information about the swap chain, set by
+                      * setup_swap_chain_details() */
 
-    VkSwapchainKHR swap_chain;
+    VkSwapchainKHR swap_chain; /* these five are created by setup_swap_chain(),
+                                * setup_framebuffers(), and setup_image_views()
+                                */
     VkImage * swap_chain_images;
     uint32_t n_swap_chain_images;
     VkImageView * swap_chain_image_views;
     VkFramebuffer * framebuffers;
 
-    VkRenderPass render_pass;
+    VkRenderPass render_pass; /* these three are the render pass and pipeline
+                                 state objects created by setup_pipeline()*/
     VkPipelineLayout layout;
     VkPipeline pipeline;
 
-    VkCommandPool command_pool;
-    VkCommandBuffer * command_buffers;
+    VkCommandPool command_pool; /* these two created by setup_command_pool() */
+    VkCommandBuffer * command_buffers; /* indexed by current_frame */
 
     struct {
-        VkSemaphore image_available,
-                    render_finished;
-        VkFence in_flight;
-    } * sync;
+        VkSemaphore image_available, /* have we acquired an image to render
+                                      * to?
+                                      */
+                    render_finished; /* has rendering completed? */
+        VkFence in_flight; /* is this frame in flight? */
+    } * sync; /* syncronization primitives, indexed by current_frame */
 
-    uint32_t current_frame;
-    uint64_t frame;
+    uint32_t current_frame; /* controls which sync, image, view, framebuffer,
+                             * and command buffer we use. always a value
+                             * between 0 and config.max_frames_in_flight
+                             */
 
 } renderer = { };
 
-/* recreate the parts of the renderer that can have gone stale */
-static enum renderer_result renderer_recreate_swap_chain();
+/*****************************************************************************
+ *                           FUNCTIONS IN THIS FILE                          *
+ *****************************************************************************/
 
-/* load a thing from a file */
+/*
+ * MAIN RENDERING LOOP FUNCTIONS
+ */
+static enum renderer_result renderer_recreate_swap_chain();
+static enum renderer_result renderer_draw_frame();
+static enum renderer_result record_command_buffer(
+        VkCommandBuffer command_buffer,
+        uint32_t image_index
+    );
+enum renderer_result renderer_init(
+        const struct renderer_configuration * config);
+void renderer_terminate();
+void renderer_loop();
+
+/*
+ * INITIALIZATION FUNCTIONS
+ */
+
+static enum renderer_result setup_glfw();
+static enum renderer_result setup_instance();
+static enum renderer_result setup_window_surface();
+static enum renderer_result setup_swap_chain();
+static enum renderer_result setup_physical_device();
+static enum renderer_result setup_logical_device();
+static enum renderer_result setup_image_views();
+static enum renderer_result setup_pipeline();
+static enum renderer_result setup_framebuffers();
+static enum renderer_result setup_command_pool();
+static enum renderer_result setup_sync_objects();
+
+/*
+ * HELPER FUNCTIONS
+ */
+static enum renderer_result setup_queue_families(
+        VkPhysicalDevice candidate);
+static enum renderer_result setup_swap_chain_details(
+        VkPhysicalDevice candidate);
+
+/*
+ * UTILITY FUNCTIONS
+ */
+static enum renderer_result load_file(
+        const char * name,
+        const char * basename,
+        char ** buffer_out,
+        size_t * size_out
+    ) [[gnu::nonnull(1, 2)]];
+
+/*****************************************************************************
+ *                             RENDERER INTERNALS                            *
+ *****************************************************************************/
+
+/* utility function: load a thing from the file basename/name, storing its
+ * contents and size into buffer_out and size_out
+ */
 static enum renderer_result load_file(
         const char * name,
         const char * basename,
@@ -222,6 +288,7 @@ static enum renderer_result load_file(
     return RENDERER_OKAY;
 }
 
+/* callback for when we need to resize */
 static void framebuffer_resize_callback(
         GLFWwindow * window, int width, int height)
 {
@@ -388,18 +455,15 @@ static enum renderer_result setup_instance()
     const char ** extensions = sorted_set_flatten_keys(
             extensions_set, &n_extensions);
 
-    size_t n_layers;
-    const char ** layers = sorted_set_flatten_keys(layers_set, &n_layers);
-    renderer.n_layers = n_layers;
-    renderer.layers = layers;
+    renderer.layers = sorted_set_flatten_keys(layers_set, &renderer.n_layers);
 
     VkInstanceCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
         .pApplicationInfo = &app_info,
         .enabledExtensionCount = n_extensions,
         .ppEnabledExtensionNames = extensions,
-        .enabledLayerCount = n_layers,
-        .ppEnabledLayerNames = layers
+        .enabledLayerCount = renderer.n_layers,
+        .ppEnabledLayerNames = renderer.layers
     };
 
     VkResult result = vkCreateInstance(&create_info, NULL, &renderer.instance);
@@ -421,7 +485,7 @@ static enum renderer_result setup_instance()
     return RENDERER_OKAY;
 }
 
-/* have GLFW create a window sruface */
+/* have GLFW create a window surface */
 static enum renderer_result setup_window_surface()
 {
     VkResult result = glfwCreateWindowSurface(
@@ -501,7 +565,7 @@ static enum renderer_result setup_queue_families(
 }
 
 /* set up the swap chain */
-static enum renderer_result setup_swap_chain(VkSwapchainKHR old_swap_chain)
+static enum renderer_result setup_swap_chain()
 {
     /* prefer SRGB R8G8B8 */
     renderer.chain_details.format = renderer.chain_details.formats[0];
@@ -534,7 +598,6 @@ static enum renderer_result setup_swap_chain(VkSwapchainKHR old_swap_chain)
         glfwGetFramebufferSize(renderer.window, &width, &height);
 
         if (height == 0 || width == 0) {
-            printf("minimized\n");
             renderer.minimized = true;
             renderer.needs_recreation = true;
             return RENDERER_OKAY;
@@ -582,8 +645,7 @@ static enum renderer_result setup_swap_chain(VkSwapchainKHR old_swap_chain)
             renderer.chain_details.capabilities.currentTransform,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
         .presentMode = renderer.chain_details.present_mode,
-        .clipped = VK_TRUE,
-        .oldSwapchain = old_swap_chain
+        .clipped = VK_TRUE
     };
 
     if (renderer.chain_details.capabilities.maxImageCount > 0) {
@@ -1467,8 +1529,6 @@ static enum renderer_result record_command_buffer(
 static enum renderer_result renderer_draw_frame()
 {
     if (!renderer.initialized) {
-        assert(0);
-        printf("not initialized\n");
         if (!renderer_init(NULL)) {
             return RENDERER_ERROR;
         }
@@ -1484,7 +1544,6 @@ static enum renderer_result renderer_draw_frame()
 
     uint32_t image_index;
 
-    renderer.recreated = false;
     VkResult result = vkAcquireNextImageKHR(
             renderer.device,
             renderer.swap_chain,
@@ -1499,7 +1558,6 @@ static enum renderer_result renderer_draw_frame()
             result == VK_ERROR_OUT_OF_DATE_KHR) {
         if (!renderer_recreate_swap_chain()) {
             renderer.needs_recreation = false;
-            renderer.recreated = true;
         } else {
             return RENDERER_ERROR;
         }
@@ -1677,7 +1735,7 @@ static enum renderer_result renderer_recreate_swap_chain()
         setup_swap_chain_details(renderer.physical_device);
     if (result) return result;
 
-    result = setup_swap_chain(NULL);
+    result = setup_swap_chain();
     if (result) return result;
 
     if (renderer.minimized) {
@@ -1698,6 +1756,11 @@ static enum renderer_result renderer_recreate_swap_chain()
 
     return RENDERER_OKAY;
 }
+
+/*****************************************************************************
+ *                            RENDERER PUBLIC API                            *
+ *****************************************************************************/
+
 /* initialize the renderer */
 enum renderer_result renderer_init(
         const struct renderer_configuration * config)
@@ -1729,12 +1792,11 @@ enum renderer_result renderer_init(
     result = setup_command_pool();
     if (result) return result;
 
-    result = setup_swap_chain(NULL);
+    result = setup_swap_chain();
     if (result) return result;
 
     renderer.initialized = true;
     renderer.needs_recreation = false;
-    renderer.recreated = false;
 
     /* TODO */
     if (renderer.minimized) {
@@ -1753,6 +1815,7 @@ enum renderer_result renderer_init(
     return RENDERER_OKAY;
 }
 
+/* shut down the renderer and free its resources */
 void renderer_terminate()
 {
     if (renderer.sync) {
@@ -1884,6 +1947,7 @@ void renderer_terminate()
     renderer.initialized = false;
 }
 
+/* enter the GLFW event loop */
 void renderer_loop()
 {
     if (!renderer.initialized) {
