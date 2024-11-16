@@ -75,6 +75,10 @@ struct renderer {
 
     VkSurfaceKHR surface; /* the window surface */
 
+    bool needs_recreation; /* should we recreate the swap chain? */
+    bool recreated; /* did we just recreate the swap chain? */
+    bool minimized; /* are we minimized (and thus should not render?) */
+
     struct swap_chain_details {
         VkSurfaceCapabilitiesKHR capabilities;
         VkSurfaceFormatKHR * formats;
@@ -106,19 +110,25 @@ struct renderer {
     } * sync;
 
     uint32_t current_frame;
+    uint64_t frame;
 
 } renderer = { };
 
+/* recreate the parts of the renderer that can have gone stale */
+static enum renderer_result renderer_recreate_swap_chain();
+
+/* load a thing from a file */
 static enum renderer_result load_file(
         const char * name,
+        const char * basename,
         char ** buffer_out,
         size_t * size_out
     ) [[gnu::nonnull(1, 2)]]
 {
     size_t fullpath_length = snprintf(
-            NULL, 0, "%s/%s", SHADER_BASE_PATH, name);
+            NULL, 0, "%s/%s", basename, name);
     char * fullpath = malloc(fullpath_length + 1);
-    snprintf(fullpath, fullpath_length + 1, "%s/%s", SHADER_BASE_PATH, name);
+    snprintf(fullpath, fullpath_length + 1, "%s/%s", basename, name);
 
     FILE * file = fopen(fullpath, "rb");
 
@@ -212,16 +222,26 @@ static enum renderer_result load_file(
     return RENDERER_OKAY;
 }
 
+static void framebuffer_resize_callback(
+        GLFWwindow * window, int width, int height)
+{
+    (void)window;
+    (void)width;
+    (void)height;
+    renderer.needs_recreation = true;
+}
+
 /* initialize GLFW and create a window */
 static enum renderer_result setup_glfw()
 {
     glfwInit();
     renderer.glfw_needs_terminate = true;
 
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     /* TODO: configurable: window resolution, fullscreen vs windowed */
     renderer.window = glfwCreateWindow(800, 600, "cards-client", NULL, NULL);
+    glfwSetFramebufferSizeCallback(
+            renderer.window, &framebuffer_resize_callback);
 
     if (!renderer.window) {
         fprintf(stderr, "[renderer] glfwCreateWindow() failed\n");
@@ -267,7 +287,7 @@ static enum renderer_result setup_instance()
      *       and a configuration option for verbosity for reporting whether
      *       optional extensions were present?
      */
-    const char * our_extensions[] = { };
+    const char * our_extensions[] = { "VK_KHR_get_physical_device_properties2" };
     sorted_set_add_keys_copy(
             extensions_set,
             our_extensions, 
@@ -481,7 +501,7 @@ static enum renderer_result setup_queue_families(
 }
 
 /* set up the swap chain */
-static enum renderer_result setup_swap_chain()
+static enum renderer_result setup_swap_chain(VkSwapchainKHR old_swap_chain)
 {
     /* prefer SRGB R8G8B8 */
     renderer.chain_details.format = renderer.chain_details.formats[0];
@@ -512,6 +532,13 @@ static enum renderer_result setup_swap_chain()
     } else {
         int width, height;
         glfwGetFramebufferSize(renderer.window, &width, &height);
+
+        if (height == 0 || width == 0) {
+            printf("minimized\n");
+            renderer.minimized = true;
+            renderer.needs_recreation = true;
+            return RENDERER_OKAY;
+        }
 
         VkExtent2D extent = {
             .width = width,
@@ -556,7 +583,7 @@ static enum renderer_result setup_swap_chain()
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
         .presentMode = renderer.chain_details.present_mode,
         .clipped = VK_TRUE,
-        .oldSwapchain = VK_NULL_HANDLE
+        .oldSwapchain = old_swap_chain
     };
 
     if (renderer.chain_details.capabilities.maxImageCount > 0) {
@@ -807,8 +834,6 @@ static enum renderer_result setup_logical_device()
         }
     };
 
-    VkPhysicalDeviceFeatures device_features = { };
-
     const char * extensions[] = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME
     };
@@ -818,7 +843,7 @@ static enum renderer_result setup_logical_device()
         .pQueueCreateInfos = queue_create_info,
         .queueCreateInfoCount =
             sizeof(queue_create_info) / sizeof(*queue_create_info),
-        .pEnabledFeatures = &device_features,
+        .pEnabledFeatures = &(VkPhysicalDeviceFeatures){ },
         .enabledExtensionCount = sizeof(extensions) / sizeof(*extensions),
         .ppEnabledExtensionNames = extensions,
         .enabledLayerCount = renderer.n_layers,
@@ -919,10 +944,12 @@ static enum renderer_result setup_pipeline()
 
     enum renderer_result result1 = load_file(
                 "vertex.spv",
+                SHADER_BASE_PATH,
                 &vertex_shader_blob,
                 &vertex_shader_blob_size);
     enum renderer_result result2 = load_file(
                 "fragment.spv",
+                SHADER_BASE_PATH,
                 &fragment_shader_blob,
                 &fragment_shader_blob_size);
 
@@ -1303,7 +1330,7 @@ static enum renderer_result setup_sync_objects()
                     stderr,
                     "[renderer] vkCreateSemaphore() failed (%d)\n",
                     result
-                );
+               );
             return RENDERER_ERROR;
         }
 
@@ -1439,6 +1466,14 @@ static enum renderer_result record_command_buffer(
 /* draw a frame */
 static enum renderer_result renderer_draw_frame()
 {
+    if (!renderer.initialized) {
+        assert(0);
+        printf("not initialized\n");
+        if (!renderer_init(NULL)) {
+            return RENDERER_ERROR;
+        }
+    }
+
     vkWaitForFences(
             renderer.device,
             1,
@@ -1446,20 +1481,42 @@ static enum renderer_result renderer_draw_frame()
             VK_TRUE,
             UINT64_MAX
         );
-    vkResetFences(
-            renderer.device,
-            1,
-            &renderer.sync[renderer.current_frame].in_flight
-        );
 
     uint32_t image_index;
-    vkAcquireNextImageKHR(
+
+    renderer.recreated = false;
+    VkResult result = vkAcquireNextImageKHR(
             renderer.device,
             renderer.swap_chain,
             UINT64_MAX,
             renderer.sync[renderer.current_frame].image_available,
             VK_NULL_HANDLE,
             &image_index
+        );
+
+    if (renderer.needs_recreation ||
+            result == VK_SUBOPTIMAL_KHR ||
+            result == VK_ERROR_OUT_OF_DATE_KHR) {
+        if (!renderer_recreate_swap_chain()) {
+            renderer.needs_recreation = false;
+            renderer.recreated = true;
+        } else {
+            return RENDERER_ERROR;
+        }
+        return RENDERER_OKAY;
+    } else if (result != VK_SUCCESS) {
+        return RENDERER_ERROR;
+    }
+
+    if (renderer.minimized) {
+        return RENDERER_OKAY;
+    }
+
+    /* TODO when should this happen? */
+    vkResetFences(
+            renderer.device,
+            1,
+            &renderer.sync[renderer.current_frame].in_flight
         );
 
     vkResetCommandBuffer(renderer.command_buffers[renderer.current_frame], 0);
@@ -1488,8 +1545,9 @@ static enum renderer_result renderer_draw_frame()
             renderer.sync[renderer.current_frame].render_finished
         }
     };
+    renderer.frame++;
 
-    VkResult result = vkQueueSubmit(
+    result = vkQueueSubmit(
             renderer.graphics_queue,
             1,
             &submit_info,
@@ -1526,11 +1584,127 @@ static enum renderer_result renderer_draw_frame()
     return RENDERER_OKAY;
 }
 
+/* recreate the parts of the renderer that can have gone stale */
+static enum renderer_result renderer_recreate_swap_chain()
+{
+    vkDeviceWaitIdle(renderer.device);
+
+    if (renderer.sync) {
+        for (size_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
+            if (renderer.sync[i].image_available) {
+                vkDestroySemaphore(
+                        renderer.device, renderer.sync[i].image_available, NULL);
+                renderer.sync[i].image_available = NULL;
+            }
+
+            if (renderer.sync[i].render_finished) {
+                vkDestroySemaphore(
+                        renderer.device, renderer.sync[i].render_finished, NULL);
+                renderer.sync[i].render_finished = NULL;
+            }
+
+            if (renderer.sync[i].in_flight) {
+                vkDestroyFence(
+                        renderer.device, renderer.sync[i].in_flight, NULL);
+                renderer.sync[i].in_flight = NULL;
+            }
+        }
+
+        free(renderer.sync);
+    }
+ 
+    if (renderer.framebuffers) {
+        for (uint32_t i = 0; i < renderer.n_swap_chain_images; i++) {
+            if (renderer.framebuffers[i]) {
+                vkDestroyFramebuffer(
+                        renderer.device, renderer.framebuffers[i], NULL);
+                renderer.framebuffers[i] = NULL;
+            }
+        }
+        free(renderer.framebuffers);
+    }
+
+    if (renderer.pipeline) {
+        vkDestroyPipeline(renderer.device, renderer.pipeline, NULL);
+        renderer.pipeline = NULL;
+    }
+
+    if (renderer.render_pass) {
+        vkDestroyRenderPass(renderer.device, renderer.render_pass, NULL);
+        renderer.render_pass = NULL;
+    }
+
+    if (renderer.layout) {
+        vkDestroyPipelineLayout(renderer.device, renderer.layout, NULL);
+        renderer.layout = NULL;
+    }
+
+    if (renderer.swap_chain) {
+        for (uint32_t i = 0; i < renderer.n_swap_chain_images; i++) {
+            if (renderer.swap_chain_image_views[i]) {
+                vkDestroyImageView(
+                        renderer.device,
+                        renderer.swap_chain_image_views[i],
+                        NULL
+                    );
+                renderer.swap_chain_image_views[i] = NULL;
+            }
+        }
+        free(renderer.swap_chain_images);
+        free(renderer.swap_chain_image_views);
+        renderer.swap_chain_images = NULL;
+        renderer.swap_chain_image_views = NULL;
+
+        vkDestroySwapchainKHR(renderer.device, renderer.swap_chain, NULL);
+        renderer.swap_chain = NULL;
+    }
+
+    if (renderer.chain_details.formats) {
+        free(renderer.chain_details.formats);
+        renderer.chain_details.formats = NULL;
+        renderer.chain_details.n_formats = 0;
+        renderer.chain_details.format = (VkSurfaceFormatKHR) { };
+    }
+
+    if (renderer.chain_details.present_modes) {
+        free(renderer.chain_details.present_modes);
+        renderer.chain_details.present_modes = NULL;
+        renderer.chain_details.n_present_modes = 0;
+        renderer.chain_details.present_mode = (VkPresentModeKHR) { };
+    }
+
+    enum renderer_result result =
+        setup_swap_chain_details(renderer.physical_device);
+    if (result) return result;
+
+    result = setup_swap_chain(NULL);
+    if (result) return result;
+
+    if (renderer.minimized) {
+        return RENDERER_OKAY;
+    }
+
+    result = setup_image_views();
+    if (result) return result;
+
+    result = setup_pipeline();
+    if (result) return result;
+
+    result = setup_framebuffers();
+    if (result) return result;
+
+    result = setup_sync_objects();
+    if (result) return result;
+
+    return RENDERER_OKAY;
+}
 /* initialize the renderer */
 enum renderer_result renderer_init(
         const struct renderer_configuration * config)
 {
-    renderer.config = *config;
+    if (config) {
+        renderer.config = *config;
+    }
 
     enum renderer_result result;
 
@@ -1549,8 +1723,23 @@ enum renderer_result renderer_init(
     result = setup_logical_device();
     if (result) return result;
 
-    result = setup_swap_chain();
+    result = setup_sync_objects();
     if (result) return result;
+
+    result = setup_command_pool();
+    if (result) return result;
+
+    result = setup_swap_chain(NULL);
+    if (result) return result;
+
+    renderer.initialized = true;
+    renderer.needs_recreation = false;
+    renderer.recreated = false;
+
+    /* TODO */
+    if (renderer.minimized) {
+        return RENDERER_OKAY;
+    }
 
     result = setup_image_views();
     if (result) return result;
@@ -1561,40 +1750,32 @@ enum renderer_result renderer_init(
     result = setup_framebuffers();
     if (result) return result;
 
-    result = setup_command_pool();
-    if (result) return result;
-
-    result = setup_sync_objects();
-    if (result) return result;
-
-    renderer.initialized = true;
-
     return RENDERER_OKAY;
 }
 
 void renderer_terminate()
 {
-    for (size_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
-        if (renderer.sync[i].image_available) {
-            vkDestroySemaphore(
-                    renderer.device, renderer.sync[i].image_available, NULL);
-            renderer.sync[i].image_available = NULL;
-        }
-
-        if (renderer.sync[i].render_finished) {
-            vkDestroySemaphore(
-                    renderer.device, renderer.sync[i].render_finished, NULL);
-            renderer.sync[i].render_finished = NULL;
-        }
-
-        if (renderer.sync[i].in_flight) {
-            vkDestroyFence(
-                    renderer.device, renderer.sync[i].in_flight, NULL);
-            renderer.sync[i].in_flight = NULL;
-        }
-    }
-
     if (renderer.sync) {
+        for (size_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
+            if (renderer.sync[i].image_available) {
+                vkDestroySemaphore(
+                        renderer.device, renderer.sync[i].image_available, NULL);
+                renderer.sync[i].image_available = NULL;
+            }
+
+            if (renderer.sync[i].render_finished) {
+                vkDestroySemaphore(
+                        renderer.device, renderer.sync[i].render_finished, NULL);
+                renderer.sync[i].render_finished = NULL;
+            }
+
+            if (renderer.sync[i].in_flight) {
+                vkDestroyFence(
+                        renderer.device, renderer.sync[i].in_flight, NULL);
+                renderer.sync[i].in_flight = NULL;
+            }
+        }
+
         free(renderer.sync);
     }
 
