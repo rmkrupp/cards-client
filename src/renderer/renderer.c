@@ -104,6 +104,9 @@ struct renderer {
     VkImageView * swap_chain_image_views;
     VkFramebuffer * framebuffers;
 
+    /* from setup_descriptor_set_layout() */
+    VkDescriptorSetLayout descriptor_set_layout;
+
     VkRenderPass render_pass; /* these three are the render pass and pipeline
                                  state objects created by setup_pipeline()*/
     VkPipelineLayout layout;
@@ -120,6 +123,13 @@ struct renderer {
 
     VkBuffer index_buffer;
     VkDeviceMemory index_buffer_memory;
+
+    VkBuffer * uniform_buffers; /* these three indexed by current_frame */
+    VkDeviceMemory * uniform_buffer_memories;
+    void ** uniform_buffers_mapped;
+
+    VkDescriptorPool descriptor_pool;
+    VkDescriptorSet * descriptor_sets;
 
     struct {
         VkSemaphore image_available, /* have we acquired an image to render
@@ -152,6 +162,12 @@ uint16_t indices[] = {
     0, 1, 2, 2, 3, 0
 };
 
+struct uniform_buffer_object {
+    struct matrix model,
+                  view,
+                  projection;
+};
+
 /*****************************************************************************
  *                           FUNCTIONS IN THIS FILE                          *
  *****************************************************************************/
@@ -161,6 +177,7 @@ uint16_t indices[] = {
  */
 static enum renderer_result renderer_recreate_swap_chain();
 static enum renderer_result renderer_draw_frame();
+static enum renderer_result update_uniform_buffer(uint32_t image_index);
 static enum renderer_result record_command_buffer(
         VkCommandBuffer command_buffer,
         uint32_t image_index
@@ -181,10 +198,13 @@ static enum renderer_result setup_swap_chain();
 static enum renderer_result setup_physical_device();
 static enum renderer_result setup_logical_device();
 static enum renderer_result setup_image_views();
+static enum renderer_result setup_descriptor_set_layout();
 static enum renderer_result setup_pipeline();
 static enum renderer_result setup_framebuffers();
 static enum renderer_result setup_command_pool();
 static enum renderer_result setup_sync_objects();
+static enum renderer_result setup_descriptor_pool();
+static enum renderer_result setup_descriptor_sets();
 
 /*
  * HELPER FUNCTIONS
@@ -208,6 +228,7 @@ static enum renderer_result copy_buffer(
 
 static enum renderer_result setup_vertex_buffer();
 static enum renderer_result setup_index_buffer();
+static enum renderer_result setup_uniform_buffers();
 
 /*
  * UTILITY FUNCTIONS
@@ -1038,6 +1059,42 @@ static enum renderer_result setup_image_views()
     return RENDERER_OKAY;
 }
 
+static enum renderer_result setup_descriptor_set_layout()
+{
+    VkDescriptorSetLayoutCreateInfo layout_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 1,
+        .pBindings = (VkDescriptorSetLayoutBinding[]) {
+            {
+                .binding = 0,
+                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+                .pImmutableSamplers = NULL
+            }
+        }
+    };
+
+    VkResult result = vkCreateDescriptorSetLayout(
+            renderer.device,
+            &layout_info,
+            NULL,
+            &renderer.descriptor_set_layout
+        );
+
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkCreateDescriptorSetLayout failed (%d)\n",
+                result
+            );
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    return RENDERER_OKAY;
+}
+
 /* create the graphics pipeline(s) */
 static enum renderer_result setup_pipeline()
 {
@@ -1120,7 +1177,11 @@ static enum renderer_result setup_pipeline()
     free(fragment_shader_blob);
 
     VkPipelineLayoutCreateInfo pipeline_layout_info = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1,
+        .pSetLayouts = (VkDescriptorSetLayout[]) {
+            renderer.descriptor_set_layout
+        }
     };
 
     result = vkCreatePipelineLayout(
@@ -1282,7 +1343,8 @@ static enum renderer_result setup_pipeline()
             .rasterizerDiscardEnable = VK_FALSE,
             .polygonMode = VK_POLYGON_MODE_FILL,
             .lineWidth = 1.0f,
-            .cullMode = VK_CULL_MODE_BACK_BIT,
+//            .cullMode = VK_CULL_MODE_BACK_BIT,
+            .cullMode = 0,
             .frontFace = VK_FRONT_FACE_CLOCKWISE,
             .depthBiasEnable = VK_FALSE
         },
@@ -1618,6 +1680,47 @@ static enum renderer_result setup_vertex_buffer()
     return RENDERER_OKAY;
 }
 
+/* create uniform buffers for each frame */
+static enum renderer_result setup_uniform_buffers()
+{
+    renderer.uniform_buffers = calloc(
+            renderer.config.max_frames_in_flight,
+            sizeof(*renderer.uniform_buffers)
+        );
+    renderer.uniform_buffer_memories = calloc(
+            renderer.config.max_frames_in_flight,
+            sizeof(*renderer.uniform_buffer_memories)
+        );
+    renderer.uniform_buffers_mapped = calloc(
+            renderer.config.max_frames_in_flight,
+            sizeof(*renderer.uniform_buffers_mapped)
+        );
+
+    for (uint32_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
+        if (create_buffer(
+                &renderer.uniform_buffers[i],
+                &renderer.uniform_buffer_memories[i],
+                sizeof(struct uniform_buffer_object),
+                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+            )) {
+            return RENDERER_ERROR;
+        }
+
+        vkMapMemory(
+                renderer.device,
+                renderer.uniform_buffer_memories[i],
+                0,
+                sizeof(struct uniform_buffer_object),
+                0,
+                &renderer.uniform_buffers_mapped[i]
+            );
+    }
+
+    return RENDERER_OKAY;
+}
+
 /* create and copy indices */
 static enum renderer_result setup_index_buffer()
 {
@@ -1714,7 +1817,9 @@ static enum renderer_result setup_command_pool()
         return RENDERER_ERROR;
     }
 
-    if (setup_vertex_buffer() || setup_index_buffer()) {
+    if (setup_vertex_buffer() ||
+            setup_index_buffer() ||
+            setup_uniform_buffers()) {
         return RENDERER_ERROR;
     }
 
@@ -1741,6 +1846,95 @@ static enum renderer_result setup_command_pool()
             );
         renderer_terminate();
         return RENDERER_ERROR;
+    }
+
+    return RENDERER_OKAY;
+}
+
+static enum renderer_result setup_descriptor_pool()
+{
+    VkDescriptorPoolCreateInfo pool_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .poolSizeCount = 1,
+        .pPoolSizes = (VkDescriptorPoolSize[]) {
+            {
+                .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .descriptorCount = renderer.config.max_frames_in_flight
+            }
+        },
+        .maxSets = renderer.config.max_frames_in_flight
+    };
+
+    VkResult result = vkCreateDescriptorPool(
+            renderer.device, &pool_info, NULL, &renderer.descriptor_pool);
+
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkCreateDescriptorPool() failed (%d)\n",
+                result
+            );
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    return RENDERER_OKAY;
+}
+
+static enum renderer_result setup_descriptor_sets()
+{
+    VkDescriptorSetLayout * layouts = malloc(
+            renderer.config.max_frames_in_flight *sizeof(*layouts));
+    for (uint32_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
+        layouts[i] = renderer.descriptor_set_layout;
+    }
+
+    VkDescriptorSetAllocateInfo alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = renderer.descriptor_pool,
+        .descriptorSetCount = renderer.config.max_frames_in_flight,
+        .pSetLayouts = layouts
+    };
+
+    renderer.descriptor_sets = calloc(
+            renderer.config.max_frames_in_flight,
+            sizeof(*renderer.descriptor_sets)
+        );
+
+    VkResult result = vkAllocateDescriptorSets(
+            renderer.device, &alloc_info, renderer.descriptor_sets);
+
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkAllocateDescriptorSets() failed (%d)\n",
+                result
+            );
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    free(layouts);
+
+    for (uint32_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
+        VkWriteDescriptorSet descriptor_write = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = renderer.descriptor_sets[i],
+            .dstBinding = 0,
+            .dstArrayElement = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = 1,
+            .pBufferInfo = &(VkDescriptorBufferInfo) {
+                .buffer = renderer.uniform_buffers[i],
+                .offset = 0,
+                .range = sizeof(struct uniform_buffer_object)
+            },
+            .pImageInfo = NULL,
+            .pTexelBufferView = NULL
+        };
+
+        vkUpdateDescriptorSets(
+                renderer.device, 1, &descriptor_write, 0, NULL);
     }
 
     return RENDERER_OKAY;
@@ -1907,7 +2101,18 @@ static enum renderer_result record_command_buffer(
                 .extent = renderer.chain_details.extent
             }
         );
-        
+
+    vkCmdBindDescriptorSets(
+            command_buffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            renderer.layout,
+            0,
+            1,
+            &renderer.descriptor_sets[renderer.current_frame],
+            0,
+            NULL
+        );
+
     vkCmdDrawIndexed(
             command_buffer,
             (uint32_t)(sizeof(indices) / sizeof(*indices)),
@@ -1928,6 +2133,51 @@ static enum renderer_result record_command_buffer(
     return RENDERER_OKAY;
 }
 
+uint32_t tick = 0;
+struct quaternion q_a, q_b, q_c;
+
+/* TODO: investigate push constants */
+static enum renderer_result update_uniform_buffer(uint32_t image_index)
+{
+
+    if (tick == 0) {
+        quaternion_identity(&q_a);
+        quaternion_from_axis_angle(&q_b, 0.0, 0.0, 1.0, 0.0001);
+//        quaternion_from_axis_angle(&q_c, 0.0, 1.0, 0.0, 0.00005);
+        //quaternion_normalize(&q_b, &q_b);
+    } else {
+        quaternion_multiply(&q_a, &q_a, &q_b);
+        //quaternion_multiply(&q_a, &q_a, &q_c);
+        quaternion_normalize(&q_a, &q_a);
+    }
+
+    struct uniform_buffer_object ubo;
+
+
+    quaternion_matrix(&ubo.model, &q_a);
+    //matrix_translation(&tmp, -(float)tick / 1000000, 0, 0);
+
+    matrix_perspective(
+            &ubo.projection,
+            0.1f,
+            10.0f,
+            3.14159 / 4,
+            renderer.chain_details.extent.width /
+            (float)renderer.chain_details.extent.height
+        );
+    //matrix_multiply(&ubo.projection,&ubo.projection, &tmp);
+    ubo.projection.matrix[5] *= -1;
+
+    //matrix_identity(&ubo.model);
+    //matrix_identity(&ubo.projection);
+    matrix_identity(&ubo.view);
+
+    memcpy(renderer.uniform_buffers_mapped[image_index], &ubo, sizeof(ubo));
+
+    tick++;
+
+    return RENDERER_OKAY;
+}
 /* draw a frame */
 static enum renderer_result renderer_draw_frame()
 {
@@ -1959,11 +2209,10 @@ static enum renderer_result renderer_draw_frame()
     if (renderer.needs_recreation ||
             result == VK_SUBOPTIMAL_KHR ||
             result == VK_ERROR_OUT_OF_DATE_KHR) {
-        if (!renderer_recreate_swap_chain()) {
-            renderer.needs_recreation = false;
-        } else {
+        if (renderer_recreate_swap_chain()) {
             return RENDERER_ERROR;
         }
+        renderer.needs_recreation = false;
         return RENDERER_OKAY;
     } else if (result != VK_SUCCESS) {
         return RENDERER_ERROR;
@@ -1985,6 +2234,10 @@ static enum renderer_result renderer_draw_frame()
                 renderer.command_buffers[renderer.current_frame],
                 image_index
             )) {
+        return RENDERER_ERROR;
+    }
+
+    if (update_uniform_buffer(renderer.current_frame)) {
         return RENDERER_ERROR;
     }
 
@@ -2050,7 +2303,7 @@ static enum renderer_result renderer_recreate_swap_chain()
     vkDeviceWaitIdle(renderer.device);
 
     if (renderer.sync) {
-        for (size_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
+        for (uint32_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
             if (renderer.sync[i].image_available) {
                 vkDestroySemaphore(
                         renderer.device, renderer.sync[i].image_available, NULL);
@@ -2208,6 +2461,16 @@ enum renderer_result renderer_init(
     result = setup_image_views();
     if (result) return result;
 
+    result = setup_descriptor_set_layout();
+    if (result) return result;
+
+    result = setup_descriptor_pool();
+    if (result) return result;
+
+    result = setup_descriptor_sets();
+    if (result) return result;
+
+
     result = setup_pipeline();
     if (result) return result;
 
@@ -2221,7 +2484,7 @@ enum renderer_result renderer_init(
 void renderer_terminate()
 {
     if (renderer.sync) {
-        for (size_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
+        for (uint32_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
             if (renderer.sync[i].image_available) {
                 vkDestroySemaphore(
                         renderer.device, renderer.sync[i].image_available, NULL);
@@ -2275,6 +2538,29 @@ void renderer_terminate()
         renderer.transient_command_pool = NULL;
     }
 
+    if (renderer.uniform_buffers) {
+        for (uint32_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
+            vkDestroyBuffer(
+                    renderer.device, renderer.uniform_buffers[i], NULL);
+        }
+        free(renderer.uniform_buffers);
+        renderer.uniform_buffers = NULL;
+    }
+
+    if (renderer.uniform_buffer_memories) {
+        for (uint32_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
+            vkFreeMemory(
+                    renderer.device, renderer.uniform_buffer_memories[i], NULL);
+        }
+        free(renderer.uniform_buffer_memories);
+        renderer.uniform_buffer_memories = NULL;
+    }
+
+    if (renderer.uniform_buffers_mapped) {
+        free(renderer.uniform_buffers_mapped);
+        renderer.uniform_buffers_mapped = NULL;
+    }
+
     if (renderer.framebuffers) {
         for (uint32_t i = 0; i < renderer.n_swap_chain_images; i++) {
             if (renderer.framebuffers[i]) {
@@ -2300,6 +2586,23 @@ void renderer_terminate()
     if (renderer.layout) {
         vkDestroyPipelineLayout(renderer.device, renderer.layout, NULL);
         renderer.layout = NULL;
+    }
+
+    if (renderer.descriptor_set_layout) {
+        vkDestroyDescriptorSetLayout(
+                renderer.device, renderer.descriptor_set_layout, NULL);
+        renderer.descriptor_set_layout = NULL;
+    }
+
+    if (renderer.descriptor_pool) {
+        vkDestroyDescriptorPool(
+                renderer.device, renderer.descriptor_pool, NULL);
+        renderer.descriptor_pool = NULL;
+    }
+
+    if (renderer.descriptor_sets) {
+        free(renderer.descriptor_sets);
+        renderer.descriptor_sets = NULL;
     }
 
     if (renderer.swap_chain) {
