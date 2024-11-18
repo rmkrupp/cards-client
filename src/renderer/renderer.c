@@ -147,15 +147,15 @@ struct renderer {
 } renderer = { };
 
 struct vertex {
-    struct vec2 position;
+    struct vec3 position;
     struct vec3 color;
 };
-
+constexpr float z = 0.0;
 struct vertex vertices[] = {
-    { {-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f} },
-    { {0.5f, -0.5f}, {0.0f, 1.0f, 0.0f} },
-    { {0.5f, 0.5f}, {0.0f, 0.0f, 1.0f} },
-    { {-0.5f, 0.5f}, {1.0f, 0.0f, 1.0f} }
+    { {-0.5f, -0.5f, z}, {1.0f, 0.0f, 0.0f} },
+    { {0.5f, -0.5f, z}, {0.0f, 1.0f, 0.0f} },
+    { {0.5f, 0.5f, z}, {0.0f, 0.0f, 1.0f} },
+    { {-0.5f, 0.5f, z}, {1.0f, 0.0f, 1.0f} }
 };
 
 uint16_t indices[] = {
@@ -1339,7 +1339,8 @@ static enum renderer_result setup_pipeline()
         .pRasterizationState = &(VkPipelineRasterizationStateCreateInfo) {
             .sType =
                 VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-            .depthClampEnable = VK_FALSE,
+            //.depthClampEnable = VK_FALSE,
+            .depthClampEnable = VK_TRUE,
             .rasterizerDiscardEnable = VK_FALSE,
             .polygonMode = VK_POLYGON_MODE_FILL,
             .lineWidth = 1.0f,
@@ -2142,7 +2143,7 @@ static enum renderer_result update_uniform_buffer(uint32_t image_index)
 
     if (tick == 0) {
         quaternion_identity(&q_a);
-        quaternion_from_axis_angle(&q_b, 0.0, 0.0, 1.0, 0.0001);
+        quaternion_from_axis_angle(&q_b, 0.0, 1.0, 0.0, 0.001);
 //        quaternion_from_axis_angle(&q_c, 0.0, 1.0, 0.0, 0.00005);
         //quaternion_normalize(&q_b, &q_b);
     } else {
@@ -2154,23 +2155,26 @@ static enum renderer_result update_uniform_buffer(uint32_t image_index)
     struct uniform_buffer_object ubo;
 
 
-    quaternion_matrix(&ubo.model, &q_a);
-    //matrix_translation(&tmp, -(float)tick / 1000000, 0, 0);
+    struct matrix tmp;
+    matrix_translation(&ubo.model, 0, 0, (float)tick / 3330);
+    quaternion_matrix(&tmp, &q_a);
+    matrix_multiply(&ubo.model, &ubo.model, &tmp);
+    //matrix_translation(&ubo.model, 0, 0, (float)tick / 1000);
 
     matrix_perspective(
             &ubo.projection,
-            0.1f,
-            10.0f,
+            -0.1f,
+            -10.0f,
             3.14159 / 4,
             renderer.chain_details.extent.width /
             (float)renderer.chain_details.extent.height
         );
     //matrix_multiply(&ubo.projection,&ubo.projection, &tmp);
-    ubo.projection.matrix[5] *= -1;
 
     //matrix_identity(&ubo.model);
     //matrix_identity(&ubo.projection);
-    matrix_identity(&ubo.view);
+    //matrix_identity(&ubo.model);
+    matrix_translation(&ubo.view, 0, 0, 5);
 
     memcpy(renderer.uniform_buffers_mapped[image_index], &ubo, sizeof(ubo));
 
