@@ -31,6 +31,7 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
+#include "dfield.h"
 #include "util/sorted_set.h"
 #include "quat.h"
 
@@ -60,6 +61,9 @@ struct renderer {
 
     VkPhysicalDevice physical_device; /* the physical device, created by
                                        * setup_physical_device */
+    VkPhysicalDeviceLimits limits; /* the limits extracted from the physical
+                                    * device properties
+                                    */
 
     size_t n_layers; /* set by setup_physical_device() */
     const char ** layers;
@@ -144,18 +148,25 @@ struct renderer {
                              * between 0 and config.max_frames_in_flight
                              */
 
+    VkImageView texture_image_view;
+    VkSampler texture_sampler;
+    VkImage texture_image;
+    VkDeviceMemory texture_image_memory;
+
 } renderer = { };
 
 struct vertex {
     struct vec3 position;
     struct vec3 color;
+    struct vec2 texture_coordinates;
 };
+
 constexpr float z = 0.0;
 struct vertex vertices[] = {
-    { {-0.5f, -0.5f, z}, {1.0f, 0.0f, 0.0f} },
-    { {0.5f, -0.5f, z}, {0.0f, 1.0f, 0.0f} },
-    { {0.5f, 0.5f, z}, {0.0f, 0.0f, 1.0f} },
-    { {-0.5f, 0.5f, z}, {1.0f, 0.0f, 1.0f} }
+    { { -0.5f, -0.5f, z }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f } },
+    { { 0.5f, -0.5f, z }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 1.0f } },
+    { { 0.5f, 0.5f, z }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f } },
+    { { -0.5f, 0.5f, z }, { 1.0f, 0.0f, 1.0f }, { 0.0f, 0.0f } }
 };
 
 uint16_t indices[] = {
@@ -175,17 +186,46 @@ struct uniform_buffer_object {
 /*
  * MAIN RENDERING LOOP FUNCTIONS
  */
+enum renderer_result renderer_init(
+        const struct renderer_configuration * config);
+void renderer_terminate();
+void renderer_loop();
+
 static enum renderer_result renderer_recreate_swap_chain();
+
 static enum renderer_result renderer_draw_frame();
 static enum renderer_result update_uniform_buffer(uint32_t image_index);
 static enum renderer_result record_command_buffer(
         VkCommandBuffer command_buffer,
         uint32_t image_index
     );
-enum renderer_result renderer_init(
-        const struct renderer_configuration * config);
-void renderer_terminate();
-void renderer_loop();
+enum renderer_result command_buffer_oneoff_begin(
+        VkCommandBuffer * command_buffer);
+enum renderer_result command_buffer_oneoff_end(
+        VkCommandBuffer * command_buffer);
+
+static enum renderer_result create_image(
+        VkImage * image_out,
+        VkDeviceMemory * image_memory_out,
+        uint32_t width,
+        uint32_t height,
+        VkFormat format,
+        VkImageTiling tiling,
+        VkImageUsageFlags usage,
+        VkMemoryPropertyFlags properties
+    );
+static enum renderer_result transition_image_layout(
+        VkImage image,
+        VkFormat format,
+        VkImageLayout old_layout,
+        VkImageLayout new_layout
+    );
+static enum renderer_result copy_buffer_to_image(
+        VkBuffer buffer,
+        VkImage image,
+        uint32_t width,
+        uint32_t height
+    );
 
 /*
  * INITIALIZATION FUNCTIONS
@@ -205,6 +245,9 @@ static enum renderer_result setup_command_pool();
 static enum renderer_result setup_sync_objects();
 static enum renderer_result setup_descriptor_pool();
 static enum renderer_result setup_descriptor_sets();
+static enum renderer_result setup_texture();
+static enum renderer_result setup_texture_view();
+static enum renderer_result setup_texture_sampler();
 
 /*
  * HELPER FUNCTIONS
@@ -369,7 +412,7 @@ static enum renderer_result setup_glfw()
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     /* TODO: configurable: window resolution, fullscreen vs windowed */
-    renderer.window = glfwCreateWindow(800, 600, "cards-client", NULL, NULL);
+    renderer.window = glfwCreateWindow(1920, 1080, "cards-client", NULL, NULL);
     glfwSetFramebufferSizeCallback(
             renderer.window, &framebuffer_resize_callback);
 
@@ -737,7 +780,7 @@ static enum renderer_result setup_swap_chain()
     if (result != VK_SUCCESS) {
         fprintf(
                 stderr,
-                "[renderer] vkCreateSwapchainKHR failed (%d)\n",
+                "[renderer] vkCreateSwapchainKHR() failed (%d)\n",
                 result
             );
         renderer_terminate();
@@ -942,6 +985,7 @@ static enum renderer_result setup_physical_device()
        );
 
     renderer.physical_device = candidate;
+    renderer.limits = device_properties.limits;
 
     return RENDERER_OKAY;
 }
@@ -1048,7 +1092,7 @@ static enum renderer_result setup_image_views()
         if (result != VK_SUCCESS) {
             fprintf(
                     stderr,
-                    "[renderer] vkCreateImageView failed (%d)\n",
+                    "[renderer] vkCreateImageView() failed (%d)\n",
                     result
                 );
             renderer_terminate();
@@ -1063,13 +1107,20 @@ static enum renderer_result setup_descriptor_set_layout()
 {
     VkDescriptorSetLayoutCreateInfo layout_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 1,
+        .bindingCount = 2,
         .pBindings = (VkDescriptorSetLayoutBinding[]) {
             {
                 .binding = 0,
                 .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                 .descriptorCount = 1,
                 .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+                .pImmutableSamplers = NULL
+            },
+            {
+                .binding = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
                 .pImmutableSamplers = NULL
             }
         }
@@ -1085,7 +1136,7 @@ static enum renderer_result setup_descriptor_set_layout()
     if (result != VK_SUCCESS) {
         fprintf(
                 stderr,
-                "[renderer] vkCreateDescriptorSetLayout failed (%d)\n",
+                "[renderer] vkCreateDescriptorSetLayout() failed (%d)\n",
                 result
             );
         renderer_terminate();
@@ -1292,7 +1343,7 @@ static enum renderer_result setup_pipeline()
                     .inputRate = VK_VERTEX_INPUT_RATE_VERTEX
                 }
             },
-            .vertexAttributeDescriptionCount = 2,
+            .vertexAttributeDescriptionCount = 3,
             .pVertexAttributeDescriptions =
                 (VkVertexInputAttributeDescription[]) {
                 {
@@ -1306,6 +1357,12 @@ static enum renderer_result setup_pipeline()
                     .location = 1,
                     .format = VK_FORMAT_R32G32B32_SFLOAT,
                     .offset = offsetof(struct vertex, color)
+                },
+                {
+                    .binding = 0,
+                    .location = 2,
+                    .format = VK_FORMAT_R32G32_SFLOAT,
+                    .offset = offsetof(struct vertex, texture_coordinates)
                 }
             }
         },
@@ -1552,40 +1609,9 @@ static enum renderer_result copy_buffer(
         VkBuffer src, VkBuffer dst, VkDeviceSize size
     )
 {
-    VkCommandBufferAllocateInfo allocate_info = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandPool = renderer.transient_command_pool,
-        .commandBufferCount = 1
-    };
-
     VkCommandBuffer command_buffer;
-    VkResult result = vkAllocateCommandBuffers(
-            renderer.device, &allocate_info, &command_buffer);
 
-    if (result != VK_SUCCESS) {
-        fprintf(
-                stderr,
-                "[renderer] vkAllocateCommandBuffers() failed (%d)\n",
-                result
-            );
-        renderer_terminate();
-        return RENDERER_ERROR;
-    }
-
-    VkCommandBufferBeginInfo begin_info = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
-    };
-
-    result = vkBeginCommandBuffer(command_buffer, &begin_info);
-    if (result != VK_SUCCESS) {
-        fprintf(
-                stderr,
-                "[renderer] vkBeginCommandBuffer() failed (%d)\n",
-                result
-            );
-        renderer_terminate();
+    if (command_buffer_oneoff_begin(&command_buffer)) {
         return RENDERER_ERROR;
     }
 
@@ -1596,36 +1622,10 @@ static enum renderer_result copy_buffer(
     };
 
     vkCmdCopyBuffer(command_buffer, src, dst, 1, &region);
-    vkEndCommandBuffer(command_buffer);
 
-    VkSubmitInfo submit_info = {
-        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-        .commandBufferCount = 1,
-        .pCommandBuffers = &command_buffer
-    };
-
-    result = vkQueueSubmit(
-            renderer.graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
-
-    if (result != VK_SUCCESS) {
-        fprintf(
-                stderr,
-                "[renderer] vkQueueSubmit() failed (%d)\n",
-                result
-            );
-        renderer_terminate();
+    if (command_buffer_oneoff_end(&command_buffer)) {
         return RENDERER_ERROR;
     }
-
-    /* NOTE: use a fence if we schedule multiple */
-    vkQueueWaitIdle(renderer.graphics_queue);
-
-    vkFreeCommandBuffers(
-            renderer.device,
-            renderer.transient_command_pool,
-            1,
-            &command_buffer
-        );
 
     return RENDERER_OKAY;
 }
@@ -1856,10 +1856,14 @@ static enum renderer_result setup_descriptor_pool()
 {
     VkDescriptorPoolCreateInfo pool_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .poolSizeCount = 1,
+        .poolSizeCount = 2,
         .pPoolSizes = (VkDescriptorPoolSize[]) {
             {
                 .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .descriptorCount = renderer.config.max_frames_in_flight
+            },
+            {
+                .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                 .descriptorCount = renderer.config.max_frames_in_flight
             }
         },
@@ -1918,24 +1922,39 @@ static enum renderer_result setup_descriptor_sets()
     free(layouts);
 
     for (uint32_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
-        VkWriteDescriptorSet descriptor_write = {
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = renderer.descriptor_sets[i],
-            .dstBinding = 0,
-            .dstArrayElement = 0,
-            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .descriptorCount = 1,
-            .pBufferInfo = &(VkDescriptorBufferInfo) {
-                .buffer = renderer.uniform_buffers[i],
-                .offset = 0,
-                .range = sizeof(struct uniform_buffer_object)
+        VkWriteDescriptorSet descriptor_writes[] = {
+            {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = renderer.descriptor_sets[i],
+                .dstBinding = 0,
+                .dstArrayElement = 0,
+                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .descriptorCount = 1,
+                .pBufferInfo = &(VkDescriptorBufferInfo) {
+                    .buffer = renderer.uniform_buffers[i],
+                    .offset = 0,
+                    .range = sizeof(struct uniform_buffer_object)
+                },
+                .pImageInfo = NULL,
+                .pTexelBufferView = NULL
             },
-            .pImageInfo = NULL,
-            .pTexelBufferView = NULL
+            {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = renderer.descriptor_sets[i],
+                .dstBinding = 1,
+                .dstArrayElement = 0,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .descriptorCount = 1,
+                .pImageInfo = &(VkDescriptorImageInfo) {
+                    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    .imageView = renderer.texture_image_view,
+                    .sampler = renderer.texture_sampler
+                }
+            }
         };
 
         vkUpdateDescriptorSets(
-                renderer.device, 1, &descriptor_write, 0, NULL);
+                renderer.device, 2, descriptor_writes, 0, NULL);
     }
 
     return RENDERER_OKAY;
@@ -2143,7 +2162,7 @@ static enum renderer_result update_uniform_buffer(uint32_t image_index)
 
     if (tick == 0) {
         quaternion_identity(&q_a);
-        quaternion_from_axis_angle(&q_b, 0.0, 1.0, 0.0, 0.001);
+        quaternion_from_axis_angle(&q_b, 0.0, 0.0, 1.0, 0.0001);
 //        quaternion_from_axis_angle(&q_c, 0.0, 1.0, 0.0, 0.00005);
         //quaternion_normalize(&q_b, &q_b);
     } else {
@@ -2156,9 +2175,13 @@ static enum renderer_result update_uniform_buffer(uint32_t image_index)
 
 
     struct matrix tmp;
-    matrix_translation(&ubo.model, 0, 0, (float)tick / 3330);
+    struct matrix tmp2;
+    matrix_translation(&tmp2, 0.5, 0, 0);
+    matrix_identity(&ubo.model);
+    matrix_translation(&ubo.model, 0, 0, -(float)(tick % 60000) / 1000);
     quaternion_matrix(&tmp, &q_a);
-    matrix_multiply(&ubo.model, &ubo.model, &tmp);
+    //matrix_multiply(&ubo.model, &ubo.model, &tmp);
+    //matrix_multiply(&ubo.model, &ubo.model, &tmp2);
     //matrix_translation(&ubo.model, 0, 0, (float)tick / 1000);
 
     matrix_perspective(
@@ -2454,6 +2477,16 @@ enum renderer_result renderer_init(
     result = setup_swap_chain();
     if (result) return result;
 
+    result = setup_texture();
+    if (result) return result;
+
+    result = setup_texture_view();
+    if (result) return result;
+
+    result = setup_texture_sampler();
+    if (result) return result;
+
+    /* TODO is this right? */
     renderer.initialized = true;
     renderer.needs_recreation = false;
 
@@ -2474,12 +2507,13 @@ enum renderer_result renderer_init(
     result = setup_descriptor_sets();
     if (result) return result;
 
-
     result = setup_pipeline();
     if (result) return result;
 
     result = setup_framebuffers();
     if (result) return result;
+
+    fprintf(stderr, "[renderer] (INFO) renderer initialized\n");
 
     return RENDERER_OKAY;
 }
@@ -2487,6 +2521,26 @@ enum renderer_result renderer_init(
 /* shut down the renderer and free its resources */
 void renderer_terminate()
 {
+    if (renderer.texture_sampler) {
+        vkDestroySampler(renderer.device, renderer.texture_sampler, NULL);
+        renderer.texture_sampler = NULL;
+    }
+
+    if (renderer.texture_image_view) {
+        vkDestroyImageView(renderer.device, renderer.texture_image_view, NULL);
+        renderer.texture_image_view = NULL;
+    }
+
+    if (renderer.texture_image) {
+        vkDestroyImage(renderer.device, renderer.texture_image, NULL);
+        renderer.texture_image = NULL;
+    }
+
+    if (renderer.texture_image_memory) {
+        vkFreeMemory(renderer.device, renderer.texture_image_memory, NULL);
+        renderer.texture_image_memory = NULL;
+    }
+
     if (renderer.sync) {
         for (uint32_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
             if (renderer.sync[i].image_available) {
@@ -2700,4 +2754,456 @@ void renderer_loop()
         }
     }
     vkDeviceWaitIdle(renderer.device);
+}
+
+enum renderer_result command_buffer_oneoff_begin(
+        VkCommandBuffer * command_buffer)
+{
+    VkCommandBufferAllocateInfo allocate_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandPool = renderer.transient_command_pool,
+        .commandBufferCount = 1
+    };
+
+    VkResult result = vkAllocateCommandBuffers(
+            renderer.device, &allocate_info, command_buffer);
+
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkAllocateCommandBuffers() failed (%d)\n",
+                result
+            );
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    VkCommandBufferBeginInfo begin_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+    };
+
+    result = vkBeginCommandBuffer(*command_buffer, &begin_info);
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkBeginCommandBuffer() failed (%d)\n",
+                result
+            );
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    return RENDERER_OKAY;
+}
+
+enum renderer_result command_buffer_oneoff_end(
+        VkCommandBuffer * command_buffer)
+{
+    vkEndCommandBuffer(*command_buffer);
+
+    VkSubmitInfo submit_info = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = command_buffer
+    };
+
+    VkResult result = vkQueueSubmit(
+            renderer.graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkQueueSubmit() failed (%d)\n",
+                result
+            );
+        vkFreeCommandBuffers(
+                renderer.device,
+                renderer.transient_command_pool,
+                1,
+                command_buffer
+            );
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    /* NOTE: use a fence if we schedule multiple */
+    vkQueueWaitIdle(renderer.graphics_queue);
+
+    vkFreeCommandBuffers(
+            renderer.device,
+            renderer.transient_command_pool,
+            1,
+            command_buffer
+        );
+
+    return RENDERER_OKAY;
+}
+
+static enum renderer_result create_image(
+        VkImage * image_out,
+        VkDeviceMemory * image_memory_out,
+        uint32_t width,
+        uint32_t height,
+        VkFormat format,
+        VkImageTiling tiling,
+        VkImageUsageFlags usage,
+        VkMemoryPropertyFlags properties
+    )
+{
+    VkImageCreateInfo image_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .extent = {
+            .width = width,
+            .height = height,
+            .depth = 1
+        },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .format = format,
+        .tiling = tiling,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .usage = usage,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+    };
+
+    VkResult result = vkCreateImage(
+            renderer.device, &image_info, NULL, image_out);
+
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "vkCreateImage() failed (%d)\n",
+                result
+            );
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    VkMemoryRequirements memory_requirements;
+    vkGetImageMemoryRequirements(
+            renderer.device, *image_out, &memory_requirements);
+
+    uint32_t memory_type;
+    if (find_memory_type(
+                memory_requirements.memoryTypeBits, properties, &memory_type))
+    {
+        fprintf(
+                stderr,
+                "[renderer] find_memory_type() found no suitable types\n"
+            );
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    VkMemoryAllocateInfo allocate_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = memory_requirements.size,
+        .memoryTypeIndex = memory_type
+    };
+
+    result = vkAllocateMemory(
+            renderer.device, &allocate_info, NULL, image_memory_out);
+
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "VkAllocateMemory() failed (%d)\n",
+                result
+            );
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    vkBindImageMemory(renderer.device, *image_out, *image_memory_out, 0);
+
+    return RENDERER_OKAY;
+}
+
+static enum renderer_result setup_texture()
+{
+    struct dfield dfield;
+    enum dfield_result dfield_result =
+        dfield_from_file("out/data/512/example.dfield", &dfield);
+
+    if (dfield_result) {
+        fprintf(stderr, "[renderer] dfield_from_file() failed\n");
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    uint32_t width = dfield.width;
+    uint32_t height = dfield.height;
+    VkDeviceSize size =
+        width * height * sizeof(*dfield.data);
+
+    VkBuffer staging_buffer;
+    VkDeviceMemory staging_buffer_memory;
+    if (create_buffer(
+            &staging_buffer,
+            &staging_buffer_memory,
+            size,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+        )) {
+        return RENDERER_ERROR;
+    }
+
+    void * data;
+    vkMapMemory(renderer.device, staging_buffer_memory, 0, size, 0, &data);
+    memcpy(data, dfield.data, (size_t)size);
+    vkUnmapMemory(renderer.device, staging_buffer_memory);
+
+    dfield_free(&dfield);
+
+    if (create_image(
+                &renderer.texture_image,
+                &renderer.texture_image_memory,
+                width,
+                height,
+                VK_FORMAT_R8_SNORM,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+            )) {
+        vkDestroyBuffer(renderer.device, staging_buffer, NULL);
+        vkFreeMemory(renderer.device, staging_buffer_memory, NULL);
+        return RENDERER_ERROR;
+    }
+
+    if (transition_image_layout(
+                renderer.texture_image,
+                VK_FORMAT_R8_SNORM,
+                VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+            )) {
+        vkDestroyBuffer(renderer.device, staging_buffer, NULL);
+        vkFreeMemory(renderer.device, staging_buffer_memory, NULL);
+        return RENDERER_ERROR;
+    }
+
+    if (copy_buffer_to_image(
+                staging_buffer,
+                renderer.texture_image,
+                width,
+                height
+            )) {
+        vkDestroyBuffer(renderer.device, staging_buffer, NULL);
+        vkFreeMemory(renderer.device, staging_buffer_memory, NULL);
+        return RENDERER_ERROR;
+    }
+
+    if (transition_image_layout(
+                renderer.texture_image,
+                VK_FORMAT_R8_SNORM,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            )) {
+        vkDestroyBuffer(renderer.device, staging_buffer, NULL);
+        vkFreeMemory(renderer.device, staging_buffer_memory, NULL);
+        return RENDERER_ERROR;
+    }
+
+    vkDestroyBuffer(renderer.device, staging_buffer, NULL);
+    vkFreeMemory(renderer.device, staging_buffer_memory, NULL);
+
+    return RENDERER_OKAY;
+}
+
+static enum renderer_result transition_image_layout(
+        VkImage image,
+        VkFormat format,
+        VkImageLayout old_layout,
+        VkImageLayout new_layout
+    )
+{
+    /* TODO */
+    (void)format;
+    VkCommandBuffer command_buffer;
+
+    if (command_buffer_oneoff_begin(&command_buffer)) {
+        return RENDERER_ERROR;
+    }
+
+    VkImageMemoryBarrier barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = old_layout,
+        .newLayout = new_layout,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = image,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1
+        }
+    };
+
+    VkPipelineStageFlags src_stage_flags,
+                         dst_stage_flags;
+
+    if (old_layout == VK_IMAGE_LAYOUT_UNDEFINED &&
+            new_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+        src_stage_flags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        dst_stage_flags = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    } else if (old_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL &&
+            new_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        src_stage_flags = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        dst_stage_flags = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    } else {
+        fprintf(stderr, "unsupported transition_image_layout()\n");
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    vkCmdPipelineBarrier(
+            command_buffer,
+            src_stage_flags,
+            dst_stage_flags,
+            0,
+            0,
+            NULL,
+            0,
+            NULL,
+            1,
+            &barrier
+        );
+
+    if (command_buffer_oneoff_end(&command_buffer)) {
+        return RENDERER_ERROR;
+    }
+
+    return RENDERER_OKAY;
+}
+
+static enum renderer_result copy_buffer_to_image(
+        VkBuffer buffer,
+        VkImage image,
+        uint32_t width,
+        uint32_t height
+    )
+{
+    VkCommandBuffer command_buffer;
+    if (command_buffer_oneoff_begin(&command_buffer)) {
+        return RENDERER_ERROR;
+    }
+
+    VkBufferImageCopy region = {
+        .bufferOffset = 0,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .mipLevel = 0,
+            .baseArrayLayer = 0,
+            .layerCount = 1
+        },
+        .imageOffset = { 0, 0, 0 },
+        .imageExtent = {
+            width,
+            height,
+            1
+        }
+    };
+
+    vkCmdCopyBufferToImage(
+            command_buffer,
+            buffer,
+            image,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1,
+            (VkBufferImageCopy[]) {
+                region
+            }
+        );
+
+    if (command_buffer_oneoff_end(&command_buffer)) {
+        return RENDERER_ERROR;
+    }
+
+    return RENDERER_OKAY;
+}
+
+static enum renderer_result setup_texture_view()
+{
+    VkImageViewCreateInfo view_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = renderer.texture_image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = VK_FORMAT_R8_SNORM,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount  = 1
+        }
+    };
+
+    VkResult result = vkCreateImageView(
+            renderer.device, &view_info, NULL, &renderer.texture_image_view);
+
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkCreateImageView() failed (%d)\n",
+                result
+            );
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    return RENDERER_OKAY;
+}
+
+static enum renderer_result setup_texture_sampler()
+{
+    VkSamplerCreateInfo sampler_info = {
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = VK_FILTER_LINEAR,
+        .minFilter = VK_FILTER_LINEAR,
+        .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+        .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+        .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+        .borderColor = VK_BORDER_COLOR_INT_OPAQUE_WHITE,
+        /* TODO: anisotropy */
+        .anisotropyEnable = VK_FALSE,
+        .maxAnisotropy = renderer.limits.maxSamplerAnisotropy,
+        .unnormalizedCoordinates = VK_FALSE,
+        .compareEnable = VK_FALSE,
+        .compareOp = VK_COMPARE_OP_ALWAYS,
+        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        .mipLodBias = 0.0f,
+        .minLod = 0.0f,
+        .maxLod = 0.0f
+    };
+
+    VkResult result = vkCreateSampler(
+            renderer.device, &sampler_info, NULL, &renderer.texture_sampler);
+
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkCreateSampler() failed (%d)\n",
+                result
+            );
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    return RENDERER_OKAY;
 }

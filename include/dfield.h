@@ -107,4 +107,10 @@ enum dfield_result dfield_to_file(
         struct dfield * dfield_out
     ) [[gnu::nonnull(1)]];
 
+/* free the data associated with a dfield
+ *
+ * this is equivalent to free(dfield->data)
+ */
+void dfield_free(struct dfield * dfield);
+
 #endif /* DFIELD_H */

@@ -502,6 +502,7 @@ bin_target(
         inputs = [
             '$builddir/main.o',
             '$builddir/renderer/renderer.o',
+            '$builddir/dfield.o',
             '$builddir/util/sorted_set.o',
             '$builddir/util/strdup.o',
             '$builddir/libs/quat/quat.o'

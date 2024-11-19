@@ -398,7 +398,7 @@ enum dfield_result dfield_to_file(
                 minimum_g = -minimum_g;
             }
 
-            minimum_g /= (spread * M_SQRT2 * 128);
+            minimum_g = minimum_g / spread / M_SQRT2 * 128;
 
             int32_t result = (int32_t)lrint(minimum_g);
             if (result > 127) {
@@ -421,3 +421,11 @@ enum dfield_result dfield_to_file(
     return DFIELD_RESULT_OKAY;
 }
 
+/* free the data associated with a dfield
+ *
+ * this is equivalent to free(dfield->data)
+ */
+void dfield_free(struct dfield * dfield)
+{
+    free(dfield->data);
+}
