@@ -2467,7 +2467,6 @@ static enum renderer_result renderer_recreate_swap_chain()
         free(renderer.chain_details.present_modes);
         renderer.chain_details.present_modes = NULL;
         renderer.chain_details.n_present_modes = 0;
-        renderer.chain_details.present_mode = (VkPresentModeKHR) { };
     }
 
     enum renderer_result result =
@@ -2752,7 +2751,6 @@ void renderer_terminate()
         free(renderer.chain_details.present_modes);
         renderer.chain_details.present_modes = NULL;
         renderer.chain_details.n_present_modes = 0;
-        renderer.chain_details.present_mode = (VkPresentModeKHR) { };
     }
 
     if (renderer.device) {
