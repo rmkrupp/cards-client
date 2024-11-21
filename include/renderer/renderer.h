@@ -24,6 +24,15 @@
 
 struct renderer_configuration {
     uint32_t max_frames_in_flight;
+
+    /* what size of dfield to load */
+    uint32_t field_size;
+
+    /* texture atlas settings */
+    struct atlas_configuration {
+        uint32_t max_texture_width;
+        uint32_t max_texture_layers;
+    } atlas;
 };
 
 enum renderer_result {

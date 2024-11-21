@@ -35,6 +35,7 @@
 #include "util/sorted_set.h"
 #include "quat.h"
 
+#include <math.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -42,6 +43,7 @@
 #include <string.h>
 #include <assert.h>
 #include <errno.h>
+#include <stdbool.h>
 
 /* the big global stucture that holds the renderer's state */
 struct renderer {
@@ -155,6 +157,41 @@ struct renderer {
 
 } renderer = { };
 
+struct atlas {
+    VkImage image;
+    VkDeviceMemory image_memory;
+    uint32_t element_size;
+    uint32_t elements_tall;
+    uint32_t elements_wide;
+    uint32_t layers;
+
+    VkBuffer staging_buffer;
+    VkDeviceMemory staging_buffer_memory;
+    void * staging_buffer_data;
+
+    bool begin;
+    bool done;
+
+    struct atlas_cursor {
+        uint32_t x,
+                 y,
+                 z;
+    } cursor;
+};
+
+struct atlas * atlas_create(uint32_t element_size, uint32_t element_max);
+void atlas_destroy(struct atlas * atlas);
+enum renderer_result atlas_upload(
+        struct atlas * atlas,
+        void * data,
+        float * x_out,
+        float * y_out,
+        float * z_out,
+        float * width_out,
+        float * height_out
+    );
+static void atlas_end_upload(struct atlas * atlas);
+
 struct vertex {
     struct vec3 position;
     struct vec3 color;
@@ -209,6 +246,7 @@ static enum renderer_result create_image(
         VkDeviceMemory * image_memory_out,
         uint32_t width,
         uint32_t height,
+        uint32_t layers,
         VkFormat format,
         VkImageTiling tiling,
         VkImageUsageFlags usage,
@@ -218,7 +256,8 @@ static enum renderer_result transition_image_layout(
         VkImage image,
         VkFormat format,
         VkImageLayout old_layout,
-        VkImageLayout new_layout
+        VkImageLayout new_layout,
+        uint32_t layers
     );
 static enum renderer_result copy_buffer_to_image(
         VkBuffer buffer,
@@ -987,6 +1026,24 @@ static enum renderer_result setup_physical_device()
     renderer.physical_device = candidate;
     renderer.limits = device_properties.limits;
 
+    VkPhysicalDeviceMemoryProperties memory_properties;
+    vkGetPhysicalDeviceMemoryProperties(
+            renderer.physical_device, &memory_properties);
+
+    printf("MEMORY TYPES\n");
+    for (uint32_t i = 0 ; i < memory_properties.memoryTypeCount; i++) {
+        printf("%i DEVICE_LOCAL: %s\n", i, memory_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ? "yes" : "no");
+        printf("%i HOST_VISIBLE: %s\n", i, memory_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT ? "yes" : "no");
+        printf("%i HOST_COHERENT: %s\n", i, memory_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ? "yes" : "no");
+        printf("%i HOST_CACHED: %s\n", i, memory_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT ? "yes" : "no");
+        printf("%i LAZILY_ALLOCATED: %s\n", i, memory_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT ? "yes" : "no");
+    }
+    printf("MEMORY HEAPS\n");
+    for (uint32_t i = 0 ; i < memory_properties.memoryHeapCount; i++) {
+        printf("%i SIZE: %lu\n", i, memory_properties.memoryHeaps[i].size);
+        printf("%i HOST_VISIBLE: %s\n", i, memory_properties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT ? "yes" : "no");
+    }
+
     return RENDERER_OKAY;
 }
 
@@ -1349,7 +1406,7 @@ static enum renderer_result setup_pipeline()
                 {
                     .binding = 0,
                     .location = 0,
-                    .format = VK_FORMAT_R32G32_SFLOAT,
+                    .format = VK_FORMAT_R32G32B32_SFLOAT,
                     .offset = offsetof(struct vertex, position)
                 },
                 {
@@ -2846,6 +2903,7 @@ static enum renderer_result create_image(
         VkDeviceMemory * image_memory_out,
         uint32_t width,
         uint32_t height,
+        uint32_t layers,
         VkFormat format,
         VkImageTiling tiling,
         VkImageUsageFlags usage,
@@ -2861,7 +2919,7 @@ static enum renderer_result create_image(
             .depth = 1
         },
         .mipLevels = 1,
-        .arrayLayers = 1,
+        .arrayLayers = layers,
         .format = format,
         .tiling = tiling,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
@@ -2965,6 +3023,7 @@ static enum renderer_result setup_texture()
                 &renderer.texture_image_memory,
                 width,
                 height,
+                1,
                 VK_FORMAT_R8_SNORM,
                 VK_IMAGE_TILING_OPTIMAL,
                 VK_IMAGE_USAGE_TRANSFER_DST_BIT |
@@ -2980,7 +3039,8 @@ static enum renderer_result setup_texture()
                 renderer.texture_image,
                 VK_FORMAT_R8_SNORM,
                 VK_IMAGE_LAYOUT_UNDEFINED,
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                1
             )) {
         vkDestroyBuffer(renderer.device, staging_buffer, NULL);
         vkFreeMemory(renderer.device, staging_buffer_memory, NULL);
@@ -3002,7 +3062,8 @@ static enum renderer_result setup_texture()
                 renderer.texture_image,
                 VK_FORMAT_R8_SNORM,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                1
             )) {
         vkDestroyBuffer(renderer.device, staging_buffer, NULL);
         vkFreeMemory(renderer.device, staging_buffer_memory, NULL);
@@ -3019,7 +3080,8 @@ static enum renderer_result transition_image_layout(
         VkImage image,
         VkFormat format,
         VkImageLayout old_layout,
-        VkImageLayout new_layout
+        VkImageLayout new_layout,
+        uint32_t layers
     )
 {
     /* TODO */
@@ -3042,7 +3104,7 @@ static enum renderer_result transition_image_layout(
             .baseMipLevel = 0,
             .levelCount = 1,
             .baseArrayLayer = 0,
-            .layerCount = 1
+            .layerCount = layers
         }
     };
 
@@ -3179,7 +3241,7 @@ static enum renderer_result setup_texture_sampler()
         .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
         .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
         .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
-        .borderColor = VK_BORDER_COLOR_INT_OPAQUE_WHITE,
+        .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
         /* TODO: anisotropy */
         .anisotropyEnable = VK_FALSE,
         .maxAnisotropy = renderer.limits.maxSamplerAnisotropy,
@@ -3206,4 +3268,325 @@ static enum renderer_result setup_texture_sampler()
     }
 
     return RENDERER_OKAY;
+}
+
+/* create an atlas capable of holding element_max textures, each a 2D image of
+ * (element_size, element_size) dimensions
+ *
+ * it will pack this into one 2D texture (bounds limited by device and
+ * configuration) with as many layers as needed
+ *
+ * in the case that there is not enough space in one texture, it fails
+ *
+ * note that the lowest supported dimensions are 256 layers and 4k x/y,
+ * found (outside of mobile) only on ARM Mali GPUs. the vast majority of
+ * devices support 2048 layers of 16k x/y
+ *
+ * even 256 * 4k * 4k = 4GB of memory and could pack 16k 512x512 textures,
+ * or 1M 64x64 textures; 2048 * 16k * 16k is 512GB of memory
+ *
+ * the following config value are used to influence this proess:
+ *      min(config.atlas.max_texture_width, limits.maxImageDimension2D)
+ *      min(config.atlas.max_texture_layers, limits.maxImageArrayLayers)
+ */
+struct atlas * atlas_create(uint32_t element_size, uint32_t elements)
+{
+
+    fprintf(
+            stderr,
+            "[renderer] (INFO) creating atlas for %u %ux%u elements\n",
+            elements,
+            element_size,
+            element_size
+        );
+
+    if (element_size == 0) {
+        fprintf(
+                stderr,
+                "[renderer] atlas: element width must be >= 0\n"
+            );
+        return NULL;
+    }
+
+    struct atlas * atlas = calloc(1, sizeof(*atlas));
+
+    if (elements == 0) {
+        fprintf(
+                stderr,
+                "[render] (INFO) atlas: zero-element atlas created\n"
+            );
+        return atlas;
+    }
+
+    size_t max_texture_width = renderer.limits.maxImageDimension2D;
+    size_t max_texture_layers = renderer.limits.maxImageArrayLayers;
+    if (renderer.config.atlas.max_texture_width < max_texture_width) {
+        max_texture_width = renderer.config.atlas.max_texture_width;
+        fprintf(
+                stderr,
+                "[renderer] (INFO) atlas: width is limited by config to %zu\n",
+                max_texture_width
+            );
+    } else {
+        fprintf(
+                stderr,
+                "[renderer] (INFO) atlas: width is limited by device to %zu\n",
+                max_texture_width
+            );
+    }
+    if (renderer.config.atlas.max_texture_layers < max_texture_layers) {
+        max_texture_layers = renderer.config.atlas.max_texture_layers;
+        fprintf(
+                stderr,
+                "[renderer] (INFO) atlas: layer count is limited by config to %zu\n",
+                max_texture_layers
+            );
+    } else {
+        fprintf(
+                stderr,
+                "[renderer] (INFO) atlas: layer count is limited by device to %zu\n",
+                max_texture_layers
+            );
+    }
+
+    if (element_size > max_texture_width) {
+        fprintf(
+                stderr,
+                "[renderer] atlas: cannot be created (element size %u larger than largest texture size %zu)\n",
+                element_size,
+                max_texture_width
+            );
+        free(atlas);
+        return NULL;
+    }
+
+    /* how many element_size blocks can we fit in a layer of this size? */
+    size_t elements_wide_max = max_texture_width / element_size;
+    size_t elements_per_layer = elements_wide_max * elements_wide_max;
+    size_t needed_layers;
+    if (elements % elements_per_layer == 0) {
+        needed_layers = elements / elements_per_layer;
+    } else {
+        needed_layers = elements / elements_per_layer + 1;
+    }
+
+    if (needed_layers > max_texture_layers) {
+        fprintf(
+                stderr,
+                "[renderer] atlas: cannot be created, need %zu elements but only have %zu\n",
+                needed_layers * elements_per_layer,
+                max_texture_layers * elements_per_layer
+            );
+        free(atlas);
+        return NULL;
+    }
+
+    assert(needed_layers > 0);
+
+    size_t elements_wide,
+           elements_tall;
+    if (needed_layers == 1) {
+        size_t sqrt_max = sqrt(elements);
+        if (sqrt_max * sqrt_max == elements) {
+            elements_wide = sqrt_max;
+            elements_tall = sqrt_max;
+        } else {
+            elements_wide = sqrt_max;
+            elements_tall = elements / sqrt_max + elements % sqrt_max;
+        }
+    } else {
+        elements_wide = elements_wide_max;
+        elements_tall = elements_wide_max;
+    }
+
+    fprintf(
+            stderr,
+            "[renderer] (INFO) atlas: using %zu total layers of %zu x %zu texels\n",
+            needed_layers,
+            elements_wide * element_size,
+            elements_tall * element_size
+        );
+
+    if (create_image(
+                &atlas->image,
+                &atlas->image_memory,
+                elements_wide * element_size,
+                elements_tall * element_size,
+                needed_layers,
+                VK_FORMAT_R8_SNORM,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+            )) {
+        free(atlas);
+        return NULL;
+    }
+
+    if (transition_image_layout(
+                renderer.texture_image,
+                VK_FORMAT_R8_SNORM,
+                VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                needed_layers
+            )) {
+        vkDestroyImage(renderer.device, atlas->image, NULL);
+        vkFreeMemory(renderer.device, atlas->image_memory, NULL);
+        free(atlas);
+        return NULL;
+    }
+
+    atlas->element_size = element_size;
+    atlas->elements_wide = elements_wide;
+    atlas->elements_tall = elements_tall;
+    atlas->layers = needed_layers;
+
+    return atlas;
+}
+
+void atlas_destroy(struct atlas * atlas)
+{
+    if (atlas->staging_buffer_data) {
+        vkUnmapMemory(renderer.device, atlas->staging_buffer_memory);
+    }
+    if (atlas->staging_buffer) {
+        vkDestroyBuffer(renderer.device, atlas->staging_buffer, NULL);
+    }
+    if (atlas->staging_buffer_memory) {
+        vkFreeMemory(renderer.device, atlas->staging_buffer_memory, NULL);
+    }
+    vkDestroyImage(renderer.device, atlas->image, NULL);
+    vkFreeMemory(renderer.device, atlas->image_memory, NULL);
+    free(atlas);
+}
+
+enum renderer_result atlas_upload(
+        struct atlas * atlas,
+        void * data,
+        float * x_out,
+        float * y_out,
+        float * z_out,
+        float * width_out,
+        float * height_out
+    )
+{
+    if (atlas->done) {
+        return RENDERER_ERROR;
+    }
+
+    if (atlas->begin) {
+        VkDeviceSize size =
+            atlas->element_size * atlas->element_size *
+            atlas->elements_wide * atlas->elements_tall * atlas->layers;
+
+        if (create_buffer(
+                    &atlas->staging_buffer,
+                    &atlas->staging_buffer_memory,
+                    size,
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+                )) {
+            return RENDERER_ERROR;
+        }
+
+        vkMapMemory(
+                renderer.device,
+                atlas->staging_buffer_memory,
+                0,
+                size,
+                0,
+                &atlas->staging_buffer_data
+            );
+
+        atlas->cursor = (struct atlas_cursor) {
+            .x = 0,
+            .y = 0,
+            .z = 0
+        };
+        atlas->begin = false;
+    }
+
+    memcpy(
+            atlas->staging_buffer_data,
+            data,
+            atlas->element_size * atlas->element_size
+        );
+
+    VkCommandBuffer command_buffer;
+    if (command_buffer_oneoff_begin(&command_buffer)) {
+        return RENDERER_ERROR;
+    }
+
+    VkBufferImageCopy region = {
+        .bufferOffset = 0,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .mipLevel = 0,
+            .baseArrayLayer = atlas->cursor.z,
+            .layerCount = 1
+        },
+        .imageOffset = { 0, 0, 0 },
+        .imageExtent = {
+            atlas->element_size,
+            atlas->element_size,
+            1
+        }
+    };
+
+    vkCmdCopyBufferToImage(
+            command_buffer,
+            atlas->staging_buffer,
+            atlas->image,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1,
+            (VkBufferImageCopy[]) {
+                region
+            }
+        );
+
+    if (command_buffer_oneoff_end(&command_buffer)) {
+        return RENDERER_ERROR;
+    }
+
+    *x_out = (float)atlas->cursor.x / (float)atlas->elements_wide;
+    *y_out = (float)atlas->cursor.y / (float)atlas->elements_tall;
+    *z_out = (float)atlas->cursor.z;
+    *width_out = 1 / (float)atlas->elements_wide;
+    *height_out = 1 / (float)atlas->elements_tall;
+
+    atlas->cursor.x++;
+    if (atlas->cursor.x == atlas->elements_wide) {
+        atlas->cursor.x = 0;
+        atlas->cursor.y++;
+        if (atlas->cursor.y == atlas->elements_tall) {
+            atlas->cursor.y = 0;
+            atlas->cursor.z++;
+            if (atlas->cursor.z == atlas->layers) {
+                atlas->cursor.z = 0;
+                if (transition_image_layout(
+                            atlas->image,
+                            VK_FORMAT_R8_SNORM,
+                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                            1
+                        )) {
+                    return RENDERER_ERROR;
+                }
+                atlas_end_upload(atlas);
+                atlas->done = true;
+            }
+        }
+    }
+
+    return RENDERER_OKAY;
+}
+
+static void atlas_end_upload(struct atlas * atlas)
+{
+    /* TODO: destroy staging buffer */
+    vkUnmapMemory(renderer.device, atlas->staging_buffer_memory);
+    atlas->staging_buffer_data = NULL;
 }

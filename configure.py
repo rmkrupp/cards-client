@@ -46,22 +46,29 @@ parser = argparse.ArgumentParser(
         epilog = 'This program is part of cards-client <github.com/rmkrupp/cards-client>'
     )
 
-parser.add_argument('--cflags', help='override compiler flags')
-parser.add_argument('--cc', help='override cc')
-# TODO
-# parser.add_argument('--glslc', help='override glslc')
+parser.add_argument('--cflags', help='override compiler flags (and CFLAGS)')
+parser.add_argument('--ldflags',
+                    help='override compiler flags when linking (and LDFLAGS')
+
+parser.add_argument('--cc', help='override cc (and CC)')
+parser.add_argument('--glslc', help='override glslc (and GLSLC)')
 parser.add_argument('--pkg-config', help='override pkg-config')
-parser.add_argument('--ldflags', help='override compiler flags when linking')
-#parser.add_argument('--prefix')
-#parser.add_argument('--destdir')
+
 parser.add_argument('--build',
                     choices=['release', 'debug', 'w64'], default='debug',
                     help='set the build type (default: debug)')
+parser.add_argument('--enable-compatible', action='store_true',
+                    help='enable compatibility mode for older compilers')
+parser.add_argument('--disable-sanitize', action='store_true',
+                    help='don\'t enable the sanitizer in debug mode')
+parser.add_argument('--vulkan-version', default='auto',
+                    choices=['auto', '1.0', '1.1', '1.2', '1.3'])
 parser.add_argument('--build-native',
                     choices=['none', 'mtune', 'march', 'both'], default='none',
                     help='build with mtune=native or march=native')
 parser.add_argument('--O3', '--o3', action='store_true',
                     help='build releases with -O3')
+
 parser.add_argument('--disable-test-tool', action='append', default=[],
                     choices=[
                     ],
@@ -73,20 +80,25 @@ parser.add_argument('--disable-tool', action='append', default=[],
                     help='don\'t build a specific tool')
 parser.add_argument('--disable-client', action='store_true',
                     help='don\'t build the client')
+
 parser.add_argument('--disable-argp', action='store_true',
                     help='fall back to getopt for argument parsing')
-parser.add_argument('--disable-sanitize', action='store_true',
-                    help='don\'t enable the sanitizer in debug mode')
+
 parser.add_argument('--force-version', metavar='STRING',
                     help='override the version string')
 parser.add_argument('--add-version-suffix', metavar='SUFFIX',
                     help='append the version string')
-# TODO
-#parser.add_argument('--defer-git-describe', type=bool, default=True,
-#                    help='run git describe when ninja is run, not configure.py (default: true)')
-parser.add_argument('--defer-pkg-config', type=bool, default=True,
-                    action=argparse.BooleanOptionalAction,
-                    help='run pkg-config when ninja is run, not configure.py (default: yes)')
+
+# n.b. we aren't using BooleanOptionalAction for Debian reasons
+parser.add_argument('--defer-git-describe', action='store_true', default=True,
+                    help='run git describe when ninja is run, not configure.py (default)')
+parser.add_argument('--no-defer-git-describe', action='store_false', dest='defer_git_describe',
+                    help='run git describe when configure.py is run, not ninja')
+parser.add_argument('--defer-pkg-config', action='store_true', default=True,
+                    help='run pkg-config when ninja is run, not configure.py (default)')
+parser.add_argument('--no-defer-pkg-config', action='store_false', dest='defer_pkg_config',
+                    help='run pkg-config when configure.py is run, not ninja')
+
 
 args = parser.parse_args()
 
@@ -187,30 +199,59 @@ def exesuffix(root, enabled):
         return root
 
 def enable_debug():
-    w.variable(key = 'std', value = '-std=gnu23')
-    w.variable(key = 'cflags', value = '$cflags $sanflags -g -Og')
+    if args.enable_compatible:
+        w.variable(key = 'std', value = '-std=gnu2x')
+        w.variable(key = 'cflags', value = '$cflags $sanflags -g -Og')
+        w.comment('adding compatibility defines because we were generated with --enable-compatible')
+        w.variable(key = 'defines',
+                   value = '$defines '+
+                   '-Dconstexpr=const ' +
+                   '"-Dstatic_assert(x)=" ' +
+                   '-DENABLE_COMPAT')
+    else:
+        w.variable(key = 'std', value = '-std=gnu23')
+        w.variable(key = 'cflags', value = '$cflags $sanflags -g -Og')
+
     if not args.force_version:
         w.variable(key = 'version', value = '"$version"-debug')
     else:
         w.comment('not appending -debug because we were generated with --force-version=')
 
 def enable_release():
-    w.variable(key = 'std', value = '-std=gnu23')
-    if (args.O3):
+    if args.O3:
         w.comment('setting -O3 because we were generated with --O3')
-        w.variable(key = 'cflags', value = '$cflags -O3')
+        o = '-O3'
     else:
-        w.variable(key = 'cflags', value = '$cflags -O2')
+        o = '-O2'
+
+    if args.enable_compatible:
+        w.variable(key = 'std', value = '-std=gnu2x')
+        w.variable(key = 'cflags', value = '$cflags ' + o)
+        w.comment('adding compatibility defines because we were generated with --enable-compatible')
+        w.variable(key = 'defines',
+                   value = '$defines '+
+                   '-Dconstexpr=const ' +
+                   '"-Dstatic_assert(x)=" ' +
+                   '-DENABLE_COMPAT')
+    else:
+        w.variable(key = 'std', value = '-std=gnu23')
+        w.variable(key = 'cflags', value = '$cflags ' + o)
+
     w.variable(key = 'defines', value = '$defines -DNDEBUG')
 
 def enable_w64():
     args.disable_argp = True
     w.variable(key = 'std', value = '-std=gnu2x')
     w.variable(key = 'cflags', value = '$cflags -O2 -static')
+    if args.enable_compatible:
+        w.comment('adding compatibility defines because we were generated with --enable-compatible')
+        w.variable(key = 'defines',
+                   value = '$defines '+
+                   '-Dconstexpr=const ' +
+                   '"-Dstatic_assert(x)=" ' +
+                   '-DENABLE_COMPAT')
     w.variable(key = 'includes',
                value = '$includes -I/usr/x86_64-w64-mingw32/include')
-    # TODO: when is this needed?
-    w.variable(key = 'mwindows', value = '-mwindows')
     w.variable(key = 'defines', value = '$defines -DNDEBUG')
 
 #
@@ -245,21 +286,49 @@ w.variable(key = 'builddir', value = 'out')
 # TOOLS TO INVOKE
 #
 
-if 'CC' in os.environ:
-    print('WARNING: CC environment variable is set but will be ignored (did you mean --cc=?)',
-          file=sys.stderr)
+def warn_environment(key, argsval, flagname):
+    if key in os.environ and argsval:
+        print('WARNING:', key,
+              'environment variable is set but will be ignored because',
+              flagname, 'was passed', file = sys.stderr)
+        w.comment('WARNING: ' + key +
+                  ' environment variable is set but will be ignored because ' +
+                  flagname + ' was passed')
+
+warn_environment('CC', args.cc, '--cc=')
+warn_environment('GLSLC', args.cc, '--glslc=')
+# TODO: is there a normal environment variable for pkg-config?
+#warn_environment('PKG_CONFIG', args.cc, '--pkg-config=')
+warn_environment('CFLAGS', args.cc, '--cflags=')
+warn_environment('LDFLAGS', args.cc, '--ldflags=')
 
 if args.cc:
-    if (args.build == 'w64' and args.cc != 'x86_64-w64-mingw32-gcc') or (args.build != 'w64' and args.cc != 'gcc'):
-        w.comment('using this cc because we were generated with --cc=' + args.cc)
+    if (args.build == 'w64' and args.cc != 'x86_64-w64-mingw32-gcc') \
+            or (args.build != 'w64' and args.cc != 'gcc'):
+        w.comment('using this cc because we were generated with --cc=' +
+                  args.cc)
     w.variable(key = 'cc', value = args.cc)
+elif 'CC' in os.environ:
+    w.comment('using this cc because CC was set')
+    w.variable(key = 'cc', value = os.environ['cc'])
 elif args.build == 'w64':
     w.variable(key = 'cc', value = 'x86_64-w64-mingw32-gcc')
 else:
     w.variable(key = 'cc', value = 'gcc')
 
+if args.glslc:
+    if args.glslc != 'glslc':
+        w.comment('using this glslc because we were generated with --glslc=' +
+                  args.glslc)
+    w.variable(key = 'glslc', value = args.glslc)
+elif 'GLSLC' in os.environ:
+    w.comment('using this glslc because GLSLC was set')
+else:
+    w.variable(key = 'glslc', value = 'glslc')
+
 if args.pkg_config:
-    w.comment('using this pkg-config because we were generated with --pkg-config=' + args.pkg_config)
+    w.comment('using this pkg-config because we were generated with --pkg-config=' +
+              args.pkg_config)
     w.variable(key = 'pkgconfig', value = args.pkg_config)
 elif args.build == 'w64':
     w.variable(key = 'pkgconfig', value = 'x86_64-w64-mingw32-pkg-config')
@@ -271,11 +340,20 @@ else:
 #
 
 if args.cflags:
-    w.comment('these are overriden below because we were generated with --cflags=' + args.cflags)
-w.variable(key = 'cflags', value = '-Wall -Wextra -Werror -fdiagnostics-color -flto')
+    w.comment('these are overriden below because we were generated with --cflags=' +
+              args.cflags)
+elif 'CFLAGS' in os.environ:
+    w.comment('these are overriden below because CFLAGS was set')
+
+w.variable(key = 'cflags',
+           value = '-Wall -Wextra -Werror -fdiagnostics-color -flto')
 
 if args.ldflags:
-    w.comment('these are overriden below because we were generated with --ldflags=' + args.ldflags)
+    w.comment('these are overriden below because we were generated with --ldflags=' +
+              args.ldflags)
+elif 'LDFLAGS' in os.environ:
+    w.comment('these are overriden below because LDFLAGS was set')
+
 w.variable(key = 'ldflags', value = '')
 
 #

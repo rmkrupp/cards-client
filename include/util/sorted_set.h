@@ -21,6 +21,7 @@
 #define UTIL_SORTED_SET_H
 
 #include <stddef.h>
+#include <stdbool.h>
 
 /* a sorted set */
 struct sorted_set;
