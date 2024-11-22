@@ -243,6 +243,7 @@ def enable_w64():
     args.disable_argp = True
     w.variable(key = 'std', value = '-std=gnu2x')
     w.variable(key = 'cflags', value = '$cflags -O2 -static')
+    w.variable(key = 'windows', value = '-lgdi32 -mwindows')
     if args.enable_compatible:
         w.comment('adding compatibility defines because we were generated with --enable-compatible')
         w.variable(key = 'defines',
@@ -485,7 +486,7 @@ w.rule(
         name = 'glslc',
         deps = 'gcc',
         depfile = '$out.d',
-        command = 'glslc -MD -MF $out.d $glsldefines -fshader-stage=$stage ' +
+        command = '$glslc -MD -MF $out.d $glsldefines -fshader-stage=$stage ' +
                   '$glslflags $in -o $out'
     )
 w.newline()
@@ -590,7 +591,7 @@ bin_target(
             '$builddir/shaders/fragment.spv'
         ],
         variables = [
-            ('libs', '-lm $vulkan_libs $glfw3_libs $lzma_libs $mwindows')
+            ('libs', '-lm $vulkan_libs $glfw3_libs $lzma_libs $windows')
         ],
         is_disabled = args.disable_client,
         why_disabled = 'we were generated with --disable-client',
