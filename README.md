@@ -19,6 +19,8 @@ Build with `./configure.py --build=release && ninja`
 
  - vulkan (on ArchLinux, building requires `vulkan-devel`)
  - GLFW
+ - liblzma (xz utils)
+ - OpenMP
 
 Pass `--disable-argp` to `configure.py` to fall back to getopt. This is the
 default if `--build=w64` is given.
