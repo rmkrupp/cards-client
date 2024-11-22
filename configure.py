@@ -591,7 +591,7 @@ bin_target(
             '$builddir/shaders/fragment.spv'
         ],
         variables = [
-            ('libs', '-lm $vulkan_libs $glfw3_libs $lzma_libs $windows')
+            ('libs', '-lm $vulkan_libs $glfw3_libs $lzma_libs -fopenmp $windows')
         ],
         is_disabled = args.disable_client,
         why_disabled = 'we were generated with --disable-client',
