@@ -22,6 +22,12 @@
 
 #include <stdint.h>
 
+/* the result of initializing the renderer */
+enum renderer_result {
+    RENDERER_OKAY,
+    RENDERER_ERROR
+};
+
 struct renderer_configuration {
     uint32_t max_frames_in_flight;
 
@@ -33,11 +39,6 @@ struct renderer_configuration {
         uint32_t max_texture_width;
         uint32_t max_texture_layers;
     } atlas;
-};
-
-enum renderer_result {
-    RENDERER_OKAY,
-    RENDERER_ERROR
 };
 
 /* call this once per program to initialize the renderer

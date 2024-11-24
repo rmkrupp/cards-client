@@ -59,7 +59,7 @@ struct renderer {
     bool glfw_needs_terminate; /* did we call glfwInit()? */
     GLFWwindow * window; /* the window */
 
-    VkInstance instance; /* the instance */
+    VkInstance instance; /* the instance created by setup_instance() */
 
     VkPhysicalDevice physical_device; /* the physical device, created by
                                        * setup_physical_device */
@@ -67,7 +67,7 @@ struct renderer {
                                     * device properties
                                     */
 
-    size_t n_layers; /* set by setup_physical_device() */
+    size_t n_layers; /* set by setup_instance() */
     const char ** layers;
 
     struct queue_families {
@@ -179,19 +179,6 @@ struct atlas {
     } cursor;
 };
 
-struct atlas * atlas_create(uint32_t element_size, uint32_t element_max);
-void atlas_destroy(struct atlas * atlas);
-enum renderer_result atlas_upload(
-        struct atlas * atlas,
-        void * data,
-        float * x_out,
-        float * y_out,
-        float * z_out,
-        float * width_out,
-        float * height_out
-    );
-static void atlas_end_upload(struct atlas * atlas);
-
 struct vertex {
     struct vec3 position;
     struct vec3 color;
@@ -228,42 +215,16 @@ enum renderer_result renderer_init(
 void renderer_terminate();
 void renderer_loop();
 
-static enum renderer_result renderer_recreate_swap_chain();
+/*
+ * CORE INTERNAL FUNCTIONS
+ */
 
+static enum renderer_result renderer_recreate_swap_chain();
 static enum renderer_result renderer_draw_frame();
 static enum renderer_result update_uniform_buffer(uint32_t image_index);
 static enum renderer_result record_command_buffer(
         VkCommandBuffer command_buffer,
         uint32_t image_index
-    );
-enum renderer_result command_buffer_oneoff_begin(
-        VkCommandBuffer * command_buffer);
-enum renderer_result command_buffer_oneoff_end(
-        VkCommandBuffer * command_buffer);
-
-static enum renderer_result create_image(
-        VkImage * image_out,
-        VkDeviceMemory * image_memory_out,
-        uint32_t width,
-        uint32_t height,
-        uint32_t layers,
-        VkFormat format,
-        VkImageTiling tiling,
-        VkImageUsageFlags usage,
-        VkMemoryPropertyFlags properties
-    );
-static enum renderer_result transition_image_layout(
-        VkImage image,
-        VkFormat format,
-        VkImageLayout old_layout,
-        VkImageLayout new_layout,
-        uint32_t layers
-    );
-static enum renderer_result copy_buffer_to_image(
-        VkBuffer buffer,
-        VkImage image,
-        uint32_t width,
-        uint32_t height
     );
 
 /*
@@ -297,6 +258,16 @@ static enum renderer_result setup_swap_chain_details(
         VkPhysicalDevice candidate);
 static enum renderer_result find_memory_type(
         uint32_t filter, VkMemoryPropertyFlags properties, uint32_t * out);
+
+static enum renderer_result setup_vertex_buffer();
+static enum renderer_result setup_index_buffer();
+static enum renderer_result setup_uniform_buffers();
+
+enum renderer_result command_buffer_oneoff_begin(
+        VkCommandBuffer * command_buffer);
+enum renderer_result command_buffer_oneoff_end(
+        VkCommandBuffer * command_buffer);
+
 static enum renderer_result create_buffer(
         VkBuffer * buffer,
         VkDeviceMemory * buffer_memory,
@@ -308,9 +279,46 @@ static enum renderer_result copy_buffer(
         VkBuffer src, VkBuffer dst, VkDeviceSize size
     );
 
-static enum renderer_result setup_vertex_buffer();
-static enum renderer_result setup_index_buffer();
-static enum renderer_result setup_uniform_buffers();
+static enum renderer_result create_image(
+        VkImage * image_out,
+        VkDeviceMemory * image_memory_out,
+        uint32_t width,
+        uint32_t height,
+        uint32_t layers,
+        VkFormat format,
+        VkImageTiling tiling,
+        VkImageUsageFlags usage,
+        VkMemoryPropertyFlags properties
+    );
+static enum renderer_result transition_image_layout(
+        VkImage image,
+        VkFormat format,
+        VkImageLayout old_layout,
+        VkImageLayout new_layout,
+        uint32_t layers
+    );
+static enum renderer_result copy_buffer_to_image(
+        VkBuffer buffer,
+        VkImage image,
+        uint32_t width,
+        uint32_t height
+    );
+
+/*
+ * ATLASES
+ */
+
+struct atlas * atlas_create(uint32_t element_size, uint32_t element_max);
+void atlas_destroy(struct atlas * atlas);
+enum renderer_result atlas_upload(
+        struct atlas * atlas,
+        void * data,
+        float * x_out,
+        float * y_out,
+        float * z_out,
+        float * width_out,
+        float * height_out
+    );
 
 /*
  * UTILITY FUNCTIONS
@@ -451,7 +459,7 @@ static enum renderer_result setup_glfw()
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     /* TODO: configurable: window resolution, fullscreen vs windowed */
-    renderer.window = glfwCreateWindow(1920, 1080, "cards-client", NULL, NULL);
+    renderer.window = glfwCreateWindow(1920, 1080, "gronk.", NULL, NULL);
     glfwSetFramebufferSizeCallback(
             renderer.window, &framebuffer_resize_callback);
 
@@ -479,7 +487,7 @@ static enum renderer_result setup_instance()
 {
     VkApplicationInfo app_info = {
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-        .pApplicationName = "cards-client",
+        .pApplicationName = "gronk.",
         .applicationVersion = VK_MAKE_VERSION(1, 0, 0), /* TODO */
         .pEngineName = "No Engine",
         .engineVersion = VK_MAKE_VERSION(1, 0, 0),
@@ -1040,7 +1048,7 @@ static enum renderer_result setup_physical_device()
     }
     printf("MEMORY HEAPS\n");
     for (uint32_t i = 0 ; i < memory_properties.memoryHeapCount; i++) {
-        printf("%i SIZE: %lu\n", i, memory_properties.memoryHeaps[i].size);
+        printf("%i SIZE: %zu\n", i, memory_properties.memoryHeaps[i].size);
         printf("%i HOST_VISIBLE: %s\n", i, memory_properties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT ? "yes" : "no");
     }
 
@@ -2235,7 +2243,7 @@ static enum renderer_result update_uniform_buffer(uint32_t image_index)
     struct matrix tmp2;
     matrix_translation(&tmp2, 0.5, 0, 0);
     matrix_identity(&ubo.model);
-    matrix_translation(&ubo.model, 0, 0, -(float)(tick % 60000) / 1000);
+    matrix_translation(&ubo.model, 0, 0, -(float)(tick % 6000) / 1000);
     quaternion_matrix(&tmp, &q_a);
     //matrix_multiply(&ubo.model, &ubo.model, &tmp);
     //matrix_multiply(&ubo.model, &ubo.model, &tmp2);
@@ -2987,6 +2995,7 @@ static enum renderer_result setup_texture()
 
     if (dfield_result) {
         fprintf(stderr, "[renderer] dfield_from_file() failed\n");
+        /* TODO renderer terminate here is triggering segfault */
         renderer_terminate();
         return RENDERER_ERROR;
     }
@@ -3434,10 +3443,41 @@ struct atlas * atlas_create(uint32_t element_size, uint32_t elements)
         return NULL;
     }
 
+    VkDeviceSize size =
+        elements_wide * elements_tall *
+        element_size * element_size *
+        needed_layers;
+
+    if (create_buffer(
+                &atlas->staging_buffer,
+                &atlas->staging_buffer_memory,
+                size,
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+            )) {
+        return NULL;
+    }
+
+    vkMapMemory(
+            renderer.device,
+            atlas->staging_buffer_memory,
+            0,
+            size,
+            0,
+            &atlas->staging_buffer_data
+        );
+
     atlas->element_size = element_size;
     atlas->elements_wide = elements_wide;
     atlas->elements_tall = elements_tall;
     atlas->layers = needed_layers;
+
+    atlas->cursor = (struct atlas_cursor) {
+        .x = 0,
+        .y = 0,
+        .z = 0
+    };
 
     return atlas;
 }
@@ -3472,39 +3512,16 @@ enum renderer_result atlas_upload(
         return RENDERER_ERROR;
     }
 
-    if (atlas->begin) {
-        VkDeviceSize size =
-            atlas->element_size * atlas->element_size *
-            atlas->elements_wide * atlas->elements_tall * atlas->layers;
+    VkDeviceSize row_size = atlas->element_size * atlas->elements_wide;
+    VkDeviceSize layer_size = atlas->element_size * atlas->element_size *
+                              atlas->elements_wide * atlas->elements_tall;
+    VkDeviceSize offset =
+        atlas->cursor.z * layer_size +
+        atlas->cursor.y * row_size +
+        atlas->cursor.x * atlas->element_size;
 
-        if (create_buffer(
-                    &atlas->staging_buffer,
-                    &atlas->staging_buffer_memory,
-                    size,
-                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-                )) {
-            return RENDERER_ERROR;
-        }
-
-        vkMapMemory(
-                renderer.device,
-                atlas->staging_buffer_memory,
-                0,
-                size,
-                0,
-                &atlas->staging_buffer_data
-            );
-
-        atlas->cursor = (struct atlas_cursor) {
-            .x = 0,
-            .y = 0,
-            .z = 0
-        };
-        atlas->begin = false;
-    }
-
+    /* TODO */
+    (void)offset;
     memcpy(
             atlas->staging_buffer_data,
             data,
@@ -3573,7 +3590,8 @@ enum renderer_result atlas_upload(
                         )) {
                     return RENDERER_ERROR;
                 }
-                atlas_end_upload(atlas);
+                /* TODO: destroy other stuff */
+                vkUnmapMemory(renderer.device, atlas->staging_buffer_memory);
                 atlas->done = true;
             }
         }
@@ -3582,9 +3600,3 @@ enum renderer_result atlas_upload(
     return RENDERER_OKAY;
 }
 
-static void atlas_end_upload(struct atlas * atlas)
-{
-    /* TODO: destroy staging buffer */
-    vkUnmapMemory(renderer.device, atlas->staging_buffer_memory);
-    atlas->staging_buffer_data = NULL;
-}
