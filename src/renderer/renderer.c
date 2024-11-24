@@ -734,6 +734,7 @@ static enum renderer_result setup_swap_chain()
 
     /* prefer MAILBOX */
     renderer.chain_details.present_mode = VK_PRESENT_MODE_FIFO_KHR;
+    /*
     for (uint32_t i = 0; i < renderer.chain_details.n_present_modes; i++) {
         if (renderer.chain_details.present_modes[i] ==
                 VK_PRESENT_MODE_MAILBOX_KHR) {
@@ -741,6 +742,7 @@ static enum renderer_result setup_swap_chain()
                 renderer.chain_details.present_modes[i];
         }
     }
+    */
 
     if (renderer.chain_details.capabilities.currentExtent.width !=
             UINT32_MAX) {
@@ -1033,24 +1035,6 @@ static enum renderer_result setup_physical_device()
 
     renderer.physical_device = candidate;
     renderer.limits = device_properties.limits;
-
-    VkPhysicalDeviceMemoryProperties memory_properties;
-    vkGetPhysicalDeviceMemoryProperties(
-            renderer.physical_device, &memory_properties);
-
-    printf("MEMORY TYPES\n");
-    for (uint32_t i = 0 ; i < memory_properties.memoryTypeCount; i++) {
-        printf("%i DEVICE_LOCAL: %s\n", i, memory_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ? "yes" : "no");
-        printf("%i HOST_VISIBLE: %s\n", i, memory_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT ? "yes" : "no");
-        printf("%i HOST_COHERENT: %s\n", i, memory_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ? "yes" : "no");
-        printf("%i HOST_CACHED: %s\n", i, memory_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT ? "yes" : "no");
-        printf("%i LAZILY_ALLOCATED: %s\n", i, memory_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT ? "yes" : "no");
-    }
-    printf("MEMORY HEAPS\n");
-    for (uint32_t i = 0 ; i < memory_properties.memoryHeapCount; i++) {
-        printf("%i SIZE: %zu\n", i, memory_properties.memoryHeaps[i].size);
-        printf("%i HOST_VISIBLE: %s\n", i, memory_properties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT ? "yes" : "no");
-    }
 
     return RENDERER_OKAY;
 }
