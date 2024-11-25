@@ -1313,7 +1313,7 @@ static enum renderer_result setup_pipeline()
             {
                 .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
                 .offset = 0,
-                .size = 4 * 4 * 2
+                .size = sizeof(renderer.push_constants)
             }
         }
     };
