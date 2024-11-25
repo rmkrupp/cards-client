@@ -159,8 +159,13 @@ struct renderer {
 
     size_t n_objects;
 
+    struct push_constants {
+        struct matrix view,
+                      projection;
+    } push_constants;
+
 } renderer = {
-    .n_objects = 1000
+    .n_objects = 2000
 };
 
 struct atlas {
@@ -204,9 +209,7 @@ uint16_t indices[] = {
 };
 
 struct uniform_buffer_object {
-    struct matrix model,
-                  view,
-                  projection;
+    struct matrix model;
 };
 
 /*
@@ -1304,6 +1307,14 @@ static enum renderer_result setup_pipeline()
         .setLayoutCount = 1,
         .pSetLayouts = (VkDescriptorSetLayout[]) {
             renderer.descriptor_set_layout
+        },
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = (VkPushConstantRange[]) {
+            {
+                .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+                .offset = 0,
+                .size = 4 * 4 * 2
+            }
         }
     };
 
@@ -2213,6 +2224,15 @@ static enum renderer_result record_command_buffer(
             NULL
         );
 
+    vkCmdPushConstants(
+            command_buffer,
+            renderer.layout,
+            VK_SHADER_STAGE_VERTEX_BIT,
+            0,
+            sizeof(renderer.push_constants),
+            &renderer.push_constants
+        );
+
     vkCmdDrawIndexed(
             command_buffer,
             (uint32_t)(sizeof(indices) / sizeof(*indices)),
@@ -2238,7 +2258,7 @@ uint32_t tick = 0;
 struct object {
     struct quaternion rotation;
     float x, y, z;
-} object[1000];
+} object[2000];
 
 /* TODO: investigate push constants */
 static enum renderer_result update_uniform_buffer(uint32_t image_index)
@@ -2264,6 +2284,16 @@ static enum renderer_result update_uniform_buffer(uint32_t image_index)
     matrix_translation(&view_matrix_b, 0, 0, 5 - ((float)(tick % 1000)) / 100.0);
     matrix_multiply(&view_matrix_c, &view_matrix_a, &view_matrix_b);
 
+    renderer.push_constants.view = view_matrix_c;
+    matrix_perspective(
+            &renderer.push_constants.projection,
+            -0.1f,
+            -10.0f,
+            3.14159 / 4,
+            renderer.chain_details.extent.width /
+            (float)renderer.chain_details.extent.height
+        );
+
     for (size_t i = 0; i < renderer.n_objects; i++) {
         struct uniform_buffer_object ubo;
         if (tick % 1000 == 0) {
@@ -2285,18 +2315,6 @@ static enum renderer_result update_uniform_buffer(uint32_t image_index)
         matrix_translation(&tmp, object[i].x, object[i].y, object[i].z + 0.0 * z);
         quaternion_matrix(&tmp2, &object[i].rotation);
         matrix_multiply(&ubo.model, &tmp, &tmp2);
-
-        matrix_perspective(
-                &ubo.projection,
-                -0.1f,
-                -10.0f,
-                3.14159 / 4,
-                renderer.chain_details.extent.width /
-                (float)renderer.chain_details.extent.height
-            );
-
-        //matrix_translation(&ubo.view, 0, 0, 5);
-        ubo.view = view_matrix_c;
 
         memcpy(
                 renderer.uniform_buffers_mapped[image_index] + sizeof(ubo) * i,
