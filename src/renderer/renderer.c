@@ -45,6 +45,8 @@
 #include <errno.h>
 #include <stdbool.h>
 
+#include <time.h>
+
 /* the big global stucture that holds the renderer's state */
 struct renderer {
 
@@ -155,7 +157,11 @@ struct renderer {
     VkImage texture_image;
     VkDeviceMemory texture_image_memory;
 
-} renderer = { };
+    size_t n_objects;
+
+} renderer = {
+    .n_objects = 1000
+};
 
 struct atlas {
     VkImage image;
@@ -185,7 +191,7 @@ struct vertex {
     struct vec2 texture_coordinates;
 };
 
-constexpr float z = 0.0;
+constexpr float z = 0.0f;
 struct vertex vertices[] = {
     { { -0.5f, -0.5f, z }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f } },
     { { 0.5f, -0.5f, z }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 1.0f } },
@@ -202,6 +208,24 @@ struct uniform_buffer_object {
                   view,
                   projection;
 };
+
+/*
+struct objects {
+    struct quaternion rotation;
+    double x, y, z;
+} objects[10] = {
+    { .x = 0.0, .y = 0.0, .z = 0.0 },
+    { .x = 0.0, .y = 0.0, .z = 0.0 },
+    { .x = 0.0, .y = 0.0, .z = 0.0 },
+    { .x = 0.0, .y = 0.0, .z = 0.0 },
+    { .x = 0.0, .y = 0.0, .z = 0.0 },
+    { .x = 0.0, .y = 0.0, .z = 0.0 },
+    { .x = 0.0, .y = 0.0, .z = 0.0 },
+    { .x = 0.0, .y = 0.0, .z = 0.0 },
+    { .x = 0.0, .y = 0.0, .z = 0.0 },
+    { .x = 0.0, .y = 0.0, .z = 0.0 }
+};
+*/
 
 /*****************************************************************************
  *                           FUNCTIONS IN THIS FILE                          *
@@ -344,8 +368,7 @@ static enum renderer_result load_file(
         size_t * size_out
     ) [[gnu::nonnull(1, 2)]]
 {
-    size_t fullpath_length = snprintf(
-            NULL, 0, "%s/%s", basename, name);
+    size_t fullpath_length = snprintf(NULL, 0, "%s/%s", basename, name);
     char * fullpath = malloc(fullpath_length + 1);
     snprintf(fullpath, fullpath_length + 1, "%s/%s", basename, name);
 
@@ -1161,7 +1184,7 @@ static enum renderer_result setup_descriptor_set_layout()
             {
                 .binding = 0,
                 .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                .descriptorCount = 1,
+                .descriptorCount = renderer.n_objects,
                 .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
                 .pImmutableSamplers = NULL
             },
@@ -1750,7 +1773,7 @@ static enum renderer_result setup_uniform_buffers()
         if (create_buffer(
                 &renderer.uniform_buffers[i],
                 &renderer.uniform_buffer_memories[i],
-                sizeof(struct uniform_buffer_object),
+                sizeof(struct uniform_buffer_object) * renderer.n_objects,
                 VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
@@ -1762,7 +1785,7 @@ static enum renderer_result setup_uniform_buffers()
                 renderer.device,
                 renderer.uniform_buffer_memories[i],
                 0,
-                sizeof(struct uniform_buffer_object),
+                sizeof(struct uniform_buffer_object) * renderer.n_objects,
                 0,
                 &renderer.uniform_buffers_mapped[i]
             );
@@ -1909,7 +1932,7 @@ static enum renderer_result setup_descriptor_pool()
         .pPoolSizes = (VkDescriptorPoolSize[]) {
             {
                 .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                .descriptorCount = renderer.config.max_frames_in_flight
+                .descriptorCount = renderer.config.max_frames_in_flight * renderer.n_objects
             },
             {
                 .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -1938,7 +1961,7 @@ static enum renderer_result setup_descriptor_pool()
 static enum renderer_result setup_descriptor_sets()
 {
     VkDescriptorSetLayout * layouts = malloc(
-            renderer.config.max_frames_in_flight *sizeof(*layouts));
+            renderer.config.max_frames_in_flight *sizeof(*layouts) * renderer.n_objects);
     for (uint32_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
         layouts[i] = renderer.descriptor_set_layout;
     }
@@ -1971,6 +1994,16 @@ static enum renderer_result setup_descriptor_sets()
     free(layouts);
 
     for (uint32_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
+        VkDescriptorBufferInfo * buffer_infos = malloc(
+                sizeof(*buffer_infos) * renderer.n_objects);
+        for (size_t j = 0; j < renderer.n_objects; j++) {
+           buffer_infos[j] = (VkDescriptorBufferInfo) {
+               .buffer = renderer.uniform_buffers[i],
+               .offset = sizeof(struct uniform_buffer_object) * j,
+               .range = sizeof(struct uniform_buffer_object)
+           }; 
+        }
+
         VkWriteDescriptorSet descriptor_writes[] = {
             {
                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -1978,12 +2011,8 @@ static enum renderer_result setup_descriptor_sets()
                 .dstBinding = 0,
                 .dstArrayElement = 0,
                 .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                .descriptorCount = 1,
-                .pBufferInfo = &(VkDescriptorBufferInfo) {
-                    .buffer = renderer.uniform_buffers[i],
-                    .offset = 0,
-                    .range = sizeof(struct uniform_buffer_object)
-                },
+                .descriptorCount = renderer.n_objects,
+                .pBufferInfo = buffer_infos,
                 .pImageInfo = NULL,
                 .pTexelBufferView = NULL
             },
@@ -2004,6 +2033,8 @@ static enum renderer_result setup_descriptor_sets()
 
         vkUpdateDescriptorSets(
                 renderer.device, 2, descriptor_writes, 0, NULL);
+
+        free(buffer_infos);
     }
 
     return RENDERER_OKAY;
@@ -2185,7 +2216,7 @@ static enum renderer_result record_command_buffer(
     vkCmdDrawIndexed(
             command_buffer,
             (uint32_t)(sizeof(indices) / sizeof(*indices)),
-            1,
+            renderer.n_objects,
             0,
             0,
             0
@@ -2203,52 +2234,76 @@ static enum renderer_result record_command_buffer(
 }
 
 uint32_t tick = 0;
-struct quaternion q_a, q_b, q_c;
+
+struct object {
+    struct quaternion rotation;
+    float x, y, z;
+} object[1000];
 
 /* TODO: investigate push constants */
 static enum renderer_result update_uniform_buffer(uint32_t image_index)
 {
 
+    static struct quaternion q_view;
+    static float s;
     if (tick == 0) {
-        quaternion_identity(&q_a);
-        quaternion_from_axis_angle(&q_b, 0.0, 0.0, 1.0, 0.0001);
-//        quaternion_from_axis_angle(&q_c, 0.0, 1.0, 0.0, 0.00005);
-        //quaternion_normalize(&q_b, &q_b);
-    } else {
-        quaternion_multiply(&q_a, &q_a, &q_b);
-        //quaternion_multiply(&q_a, &q_a, &q_c);
-        quaternion_normalize(&q_a, &q_a);
+        srand(time(NULL));
+        s = 1.0;
+    }
+    if (tick % 1000 == 0) {
+        quaternion_identity(&q_view);
+        //s = -s;
     }
 
-    struct uniform_buffer_object ubo;
+    struct quaternion q_adj_view;
+    quaternion_from_axis_angle(&q_adj_view, 0.0, s, 0.0, M_PI / 1000.0);
+    quaternion_multiply(&q_view, &q_view, &q_adj_view);
 
+    struct matrix view_matrix_a, view_matrix_b, view_matrix_c;
+    quaternion_matrix(&view_matrix_a, &q_view);
+    matrix_translation(&view_matrix_b, 0, 0, 5 - ((float)(tick % 1000)) / 100.0);
+    matrix_multiply(&view_matrix_c, &view_matrix_a, &view_matrix_b);
 
-    struct matrix tmp;
-    struct matrix tmp2;
-    matrix_translation(&tmp2, 0.5, 0, 0);
-    matrix_identity(&ubo.model);
-    matrix_translation(&ubo.model, 0, 0, -(float)(tick % 6000) / 1000);
-    quaternion_matrix(&tmp, &q_a);
-    //matrix_multiply(&ubo.model, &ubo.model, &tmp);
-    //matrix_multiply(&ubo.model, &ubo.model, &tmp2);
-    //matrix_translation(&ubo.model, 0, 0, (float)tick / 1000);
+    for (size_t i = 0; i < renderer.n_objects; i++) {
+        struct uniform_buffer_object ubo;
+        if (tick % 1000 == 0) {
+            quaternion_identity(&object[i].rotation);
+            quaternion_from_axis_angle(&object[i].rotation, 0.0, 0.0, 1.0, (double)(rand() % 100) / 100.0 * M_PI);
+            object[i].x = ((float)(rand() % 40) - 20.0) / 10.0;
+            object[i].y = ((float)(rand() % 40) - 20.0) / 10.0;
+            object[i].z = ((float)(rand() % 40) - 20.0) / 10.0;
+        } else {
+            struct quaternion q;
+            quaternion_from_axis_angle(&q, 0.0, 0.0, 1.0, 0.0001);
+            quaternion_multiply(&object[i].rotation, &object[i].rotation, &q);
+            quaternion_normalize(&object[i].rotation, &object[i].rotation);
+        }
 
-    matrix_perspective(
-            &ubo.projection,
-            -0.1f,
-            -10.0f,
-            3.14159 / 4,
-            renderer.chain_details.extent.width /
-            (float)renderer.chain_details.extent.height
-        );
-    //matrix_multiply(&ubo.projection,&ubo.projection, &tmp);
+        struct matrix tmp;
+        struct matrix tmp2;
+        float z = -(float)(tick % 600) / 100;
+        matrix_translation(&tmp, object[i].x, object[i].y, object[i].z + 0.0 * z);
+        quaternion_matrix(&tmp2, &object[i].rotation);
+        matrix_multiply(&ubo.model, &tmp, &tmp2);
 
-    //matrix_identity(&ubo.model);
-    //matrix_identity(&ubo.projection);
-    //matrix_identity(&ubo.model);
-    matrix_translation(&ubo.view, 0, 0, 5);
+        matrix_perspective(
+                &ubo.projection,
+                -0.1f,
+                -10.0f,
+                3.14159 / 4,
+                renderer.chain_details.extent.width /
+                (float)renderer.chain_details.extent.height
+            );
 
-    memcpy(renderer.uniform_buffers_mapped[image_index], &ubo, sizeof(ubo));
+        //matrix_translation(&ubo.view, 0, 0, 5);
+        ubo.view = view_matrix_c;
+
+        memcpy(
+                renderer.uniform_buffers_mapped[image_index] + sizeof(ubo) * i,
+                &ubo,
+                sizeof(ubo)
+            );
+    }
 
     tick++;
 
