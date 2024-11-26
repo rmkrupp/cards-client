@@ -112,6 +112,10 @@ struct renderer {
     VkImageView * swap_chain_image_views;
     VkFramebuffer * framebuffers;
 
+    VkImage depth_image;
+    VkDeviceMemory depth_image_memory;
+    VkImageView depth_image_view;
+
     /* from setup_descriptor_set_layout() */
     VkDescriptorSetLayout descriptor_set_layout;
 
@@ -152,10 +156,10 @@ struct renderer {
                              * between 0 and config.max_frames_in_flight
                              */
 
-    VkImageView texture_image_view;
-    VkSampler texture_sampler;
-    VkImage texture_image;
-    VkDeviceMemory texture_image_memory;
+    VkImageView texture_outline_view, texture_solid_view;
+    VkSampler texture_outline_sampler, texture_solid_sampler;
+    VkImage texture_outline, texture_solid;
+    VkDeviceMemory texture_outline_memory, texture_solid_memory;
 
     size_t n_objects;
 
@@ -269,10 +273,16 @@ static enum renderer_result setup_descriptor_set_layout();
 static enum renderer_result setup_pipeline();
 static enum renderer_result setup_framebuffers();
 static enum renderer_result setup_command_pool();
+static enum renderer_result setup_depth_image();
 static enum renderer_result setup_sync_objects();
 static enum renderer_result setup_descriptor_pool();
 static enum renderer_result setup_descriptor_sets();
-static enum renderer_result setup_texture();
+static enum renderer_result setup_texture(
+        const char * filename,
+        VkImage * texture_image,
+        VkDeviceMemory * texture_image_memory
+    );
+//static enum renderer_result setup_texture();
 static enum renderer_result setup_texture_view();
 static enum renderer_result setup_texture_sampler();
 
@@ -1175,6 +1185,43 @@ static enum renderer_result setup_image_views()
         }
     }
 
+    VkImageViewCreateInfo create_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = renderer.depth_image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = VK_FORMAT_D32_SFLOAT,
+        .components = {
+            .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .a = VK_COMPONENT_SWIZZLE_IDENTITY
+        },
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1
+        }
+    };
+
+    VkResult result = vkCreateImageView(
+            renderer.device,
+            &create_info,
+            NULL,
+            &renderer.depth_image_view
+        );
+
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkCreateImageView() failed (%d)\n",
+                result
+            );
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
     return RENDERER_OKAY;
 }
 
@@ -1182,7 +1229,7 @@ static enum renderer_result setup_descriptor_set_layout()
 {
     VkDescriptorSetLayoutCreateInfo layout_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 2,
+        .bindingCount = 3,
         .pBindings = (VkDescriptorSetLayoutBinding[]) {
             {
                 .binding = 0,
@@ -1193,6 +1240,13 @@ static enum renderer_result setup_descriptor_set_layout()
             },
             {
                 .binding = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+                .pImmutableSamplers = NULL
+            },
+            {
+                .binding = 2,
                 .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                 .descriptorCount = 1,
                 .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -1335,7 +1389,7 @@ static enum renderer_result setup_pipeline()
 
     VkRenderPassCreateInfo render_pass_info = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-        .attachmentCount = 1,
+        .attachmentCount = 2,
         .pAttachments = (VkAttachmentDescription[]) {
             {
                 .format = renderer.chain_details.format.format,
@@ -1346,6 +1400,16 @@ static enum renderer_result setup_pipeline()
                 .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
                 .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
                 .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+            },
+            {
+                .format = VK_FORMAT_D32_SFLOAT,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
             }
         },
         .subpassCount = 1,
@@ -1358,6 +1422,13 @@ static enum renderer_result setup_pipeline()
                         .attachment = 0,
                         .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
                     }
+                },
+                .pDepthStencilAttachment = (VkAttachmentReference[]) {
+                    {
+                        .attachment = 1,
+                        .layout =
+                            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+                    }
                 }
             }
         },
@@ -1366,10 +1437,13 @@ static enum renderer_result setup_pipeline()
             {
                 .srcSubpass = VK_SUBPASS_EXTERNAL,
                 .dstSubpass = 0,
-                .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                    VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
                 .srcAccessMask = 0,
-                .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                    VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                    VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
             }
         }
     };
@@ -1480,7 +1554,7 @@ static enum renderer_result setup_pipeline()
             .sType =
                 VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
             //.depthClampEnable = VK_FALSE,
-            .depthClampEnable = VK_TRUE,
+            .depthClampEnable = VK_FALSE,
             .rasterizerDiscardEnable = VK_FALSE,
             .polygonMode = VK_POLYGON_MODE_FILL,
             .lineWidth = 1.0f,
@@ -1497,6 +1571,11 @@ static enum renderer_result setup_pipeline()
         .pDepthStencilState = &(VkPipelineDepthStencilStateCreateInfo) {
             .sType =
                 VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+            .depthTestEnable = VK_TRUE,
+            .depthWriteEnable = VK_TRUE,
+            .depthCompareOp = VK_COMPARE_OP_LESS,
+            .depthBoundsTestEnable = VK_FALSE,
+            .stencilTestEnable = VK_FALSE
         },
         .pColorBlendState = &(VkPipelineColorBlendStateCreateInfo) {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
@@ -1559,9 +1638,10 @@ static enum renderer_result setup_framebuffers()
         VkFramebufferCreateInfo framebuffer_info = {
             .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             .renderPass = renderer.render_pass,
-            .attachmentCount = 1,
+            .attachmentCount = 2,
             .pAttachments = (VkImageView[]) {
-                renderer.swap_chain_image_views[i]
+                renderer.swap_chain_image_views[i],
+                renderer.depth_image_view
             },
             .width = renderer.chain_details.extent.width,
             .height = renderer.chain_details.extent.height,
@@ -1856,6 +1936,29 @@ static enum renderer_result setup_index_buffer()
     return RENDERER_OKAY;
 }
 
+/* create the depth buffer */
+static enum renderer_result setup_depth_image()
+{
+    printf("%u %u\n", renderer.chain_details.extent.width,
+            renderer.chain_details.extent.height);
+    if (create_image(
+                &renderer.depth_image,
+                &renderer.depth_image_memory,
+                renderer.chain_details.extent.width,
+                renderer.chain_details.extent.height,
+                1,
+                VK_FORMAT_D32_SFLOAT,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+            )) {
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    return RENDERER_OKAY;
+}
+
 /* create the command pool and buffer */
 static enum renderer_result setup_command_pool()
 {
@@ -1939,11 +2042,15 @@ static enum renderer_result setup_descriptor_pool()
 {
     VkDescriptorPoolCreateInfo pool_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .poolSizeCount = 2,
+        .poolSizeCount = 3,
         .pPoolSizes = (VkDescriptorPoolSize[]) {
             {
                 .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                 .descriptorCount = renderer.config.max_frames_in_flight * renderer.n_objects
+            },
+            {
+                .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .descriptorCount = renderer.config.max_frames_in_flight
             },
             {
                 .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -2036,14 +2143,27 @@ static enum renderer_result setup_descriptor_sets()
                 .descriptorCount = 1,
                 .pImageInfo = &(VkDescriptorImageInfo) {
                     .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    .imageView = renderer.texture_image_view,
-                    .sampler = renderer.texture_sampler
+                    .imageView = renderer.texture_outline_view,
+                    .sampler = renderer.texture_outline_sampler
+                }
+            },
+            {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = renderer.descriptor_sets[i],
+                .dstBinding = 2,
+                .dstArrayElement = 0,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .descriptorCount = 1,
+                .pImageInfo = &(VkDescriptorImageInfo) {
+                    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    .imageView = renderer.texture_solid_view,
+                    .sampler = renderer.texture_solid_sampler
                 }
             }
         };
 
         vkUpdateDescriptorSets(
-                renderer.device, 2, descriptor_writes, 0, NULL);
+                renderer.device, 3, descriptor_writes, 0, NULL);
 
         free(buffer_infos);
     }
@@ -2150,10 +2270,13 @@ static enum renderer_result record_command_buffer(
             .offset = { 0, 0 },
             .extent = renderer.chain_details.extent
         },
-        .clearValueCount = 1,
+        .clearValueCount = 2,
         .pClearValues = (VkClearValue[]) {
             {
                 .color = { { 1.0f, 1.0f, 1.0f, 1.0f } }
+            },
+            {
+                .depthStencil = { 1.0f, 0 }
             }
         }
     };
@@ -2258,7 +2381,8 @@ uint32_t tick = 0;
 struct object {
     struct quaternion rotation;
     float x, y, z;
-} object[2000];
+    float scale;
+} object[200000];
 
 /* TODO: investigate push constants */
 static enum renderer_result update_uniform_buffer(uint32_t image_index)
@@ -2288,7 +2412,7 @@ static enum renderer_result update_uniform_buffer(uint32_t image_index)
     matrix_perspective(
             &renderer.push_constants.projection,
             -0.1f,
-            -10.0f,
+            -1000.0f,
             3.14159 / 4,
             renderer.chain_details.extent.width /
             (float)renderer.chain_details.extent.height
@@ -2301,7 +2425,15 @@ static enum renderer_result update_uniform_buffer(uint32_t image_index)
             quaternion_from_axis_angle(&object[i].rotation, 0.0, 0.0, 1.0, (double)(rand() % 100) / 100.0 * M_PI);
             object[i].x = ((float)(rand() % 40) - 20.0) / 10.0;
             object[i].y = ((float)(rand() % 40) - 20.0) / 10.0;
-            object[i].z = ((float)(rand() % 40) - 20.0) / 10.0;
+            object[i].z = ((float)(rand() % 40000) - 20000.0) / 10000.0;
+            if (i == 0) {
+                object[i].scale = 1000.0;
+                object[i].x = 0;
+                object[i].y = 0;
+                object[i].z = -50.0;
+            } else {
+                object[i].scale = ((float)(rand() % 10)) / 5.0;
+            }
         } else {
             struct quaternion q;
             quaternion_from_axis_angle(&q, 0.0, 0.0, 1.0, 0.0001);
@@ -2312,7 +2444,7 @@ static enum renderer_result update_uniform_buffer(uint32_t image_index)
         struct matrix tmp;
         struct matrix tmp2;
         float z = -(float)(tick % 600) / 100;
-        matrix_translation(&tmp, object[i].x, object[i].y, object[i].z + 0.0 * z);
+        matrix_translation_scale(&tmp, object[i].x, object[i].y, object[i].z + 0.0 * z, object[i].scale, object[i].scale, 1.0);
         quaternion_matrix(&tmp2, &object[i].rotation);
         matrix_multiply(&ubo.model, &tmp, &tmp2);
 
@@ -2486,6 +2618,29 @@ static enum renderer_result renderer_recreate_swap_chain()
         free(renderer.framebuffers);
     }
 
+    if (renderer.depth_image_memory) {
+        vkFreeMemory(renderer.device, renderer.depth_image_memory, NULL);
+        renderer.depth_image_memory = NULL;
+    }
+
+    if (renderer.depth_image) {
+        vkDestroyImage(
+                renderer.device,
+                renderer.depth_image,
+                NULL
+                );
+        renderer.depth_image = NULL;
+    }
+
+    if (renderer.depth_image_view) {
+        vkDestroyImageView(
+                renderer.device,
+                renderer.depth_image_view,
+                NULL
+                );
+        renderer.depth_image_view = NULL;
+    }
+
     if (renderer.pipeline) {
         vkDestroyPipeline(renderer.device, renderer.pipeline, NULL);
         renderer.pipeline = NULL;
@@ -2545,6 +2700,9 @@ static enum renderer_result renderer_recreate_swap_chain()
         return RENDERER_OKAY;
     }
 
+    result = setup_depth_image();
+    if (result) return result;
+
     result = setup_image_views();
     if (result) return result;
 
@@ -2598,7 +2756,18 @@ enum renderer_result renderer_init(
     result = setup_swap_chain();
     if (result) return result;
 
-    result = setup_texture();
+    result = setup_texture(
+            "out/data/512/example.dfield",
+            &renderer.texture_outline,
+            &renderer.texture_outline_memory
+        );
+    if (result) return result;
+
+    result = setup_texture(
+            "out/data/512/example-solid.dfield",
+            &renderer.texture_solid,
+            &renderer.texture_solid_memory
+        );
     if (result) return result;
 
     result = setup_texture_view();
@@ -2615,6 +2784,9 @@ enum renderer_result renderer_init(
     if (renderer.minimized) {
         return RENDERER_OKAY;
     }
+
+    result = setup_depth_image();
+    if (result) return result;
 
     result = setup_image_views();
     if (result) return result;
@@ -2642,24 +2814,44 @@ enum renderer_result renderer_init(
 /* shut down the renderer and free its resources */
 void renderer_terminate()
 {
-    if (renderer.texture_sampler) {
-        vkDestroySampler(renderer.device, renderer.texture_sampler, NULL);
-        renderer.texture_sampler = NULL;
+    if (renderer.texture_outline_sampler) {
+        vkDestroySampler(renderer.device, renderer.texture_outline_sampler, NULL);
+        renderer.texture_outline_sampler = NULL;
     }
 
-    if (renderer.texture_image_view) {
-        vkDestroyImageView(renderer.device, renderer.texture_image_view, NULL);
-        renderer.texture_image_view = NULL;
+    if (renderer.texture_outline_view) {
+        vkDestroyImageView(renderer.device, renderer.texture_outline_view, NULL);
+        renderer.texture_outline_view = NULL;
     }
 
-    if (renderer.texture_image) {
-        vkDestroyImage(renderer.device, renderer.texture_image, NULL);
-        renderer.texture_image = NULL;
+    if (renderer.texture_outline) {
+        vkDestroyImage(renderer.device, renderer.texture_outline, NULL);
+        renderer.texture_outline = NULL;
     }
 
-    if (renderer.texture_image_memory) {
-        vkFreeMemory(renderer.device, renderer.texture_image_memory, NULL);
-        renderer.texture_image_memory = NULL;
+    if (renderer.texture_outline_memory) {
+        vkFreeMemory(renderer.device, renderer.texture_outline_memory, NULL);
+        renderer.texture_outline_memory = NULL;
+    }
+
+    if (renderer.texture_solid_sampler) {
+        vkDestroySampler(renderer.device, renderer.texture_solid_sampler, NULL);
+        renderer.texture_solid_sampler = NULL;
+    }
+
+    if (renderer.texture_solid_view) {
+        vkDestroyImageView(renderer.device, renderer.texture_solid_view, NULL);
+        renderer.texture_solid_view = NULL;
+    }
+
+    if (renderer.texture_solid) {
+        vkDestroyImage(renderer.device, renderer.texture_solid, NULL);
+        renderer.texture_solid = NULL;
+    }
+
+    if (renderer.texture_solid_memory) {
+        vkFreeMemory(renderer.device, renderer.texture_solid_memory, NULL);
+        renderer.texture_solid_memory = NULL;
     }
 
     if (renderer.sync) {
@@ -2750,6 +2942,29 @@ void renderer_terminate()
         }
         free(renderer.framebuffers);
         renderer.framebuffers = NULL;
+    }
+
+    if (renderer.depth_image_memory) {
+        vkFreeMemory(renderer.device, renderer.depth_image_memory, NULL);
+        renderer.depth_image_memory = NULL;
+    }
+
+    if (renderer.depth_image) {
+        vkDestroyImage(
+                renderer.device,
+                renderer.depth_image,
+                NULL
+                );
+        renderer.depth_image = NULL;
+    }
+
+    if (renderer.depth_image_view) {
+        vkDestroyImageView(
+                renderer.device,
+                renderer.depth_image_view,
+                NULL
+                );
+        renderer.depth_image_view = NULL;
     }
 
     if (renderer.pipeline) {
@@ -3044,11 +3259,15 @@ static enum renderer_result create_image(
     return RENDERER_OKAY;
 }
 
-static enum renderer_result setup_texture()
+static enum renderer_result setup_texture(
+        const char * filename,
+        VkImage * texture_image,
+        VkDeviceMemory * texture_image_memory
+    )
 {
     struct dfield dfield;
     enum dfield_result dfield_result =
-        dfield_from_file("out/data/512/example.dfield", &dfield);
+        dfield_from_file(filename, &dfield);
 
     if (dfield_result) {
         fprintf(stderr, "[renderer] dfield_from_file() failed\n");
@@ -3083,8 +3302,8 @@ static enum renderer_result setup_texture()
     dfield_free(&dfield);
 
     if (create_image(
-                &renderer.texture_image,
-                &renderer.texture_image_memory,
+                texture_image,
+                texture_image_memory,
                 width,
                 height,
                 1,
@@ -3100,7 +3319,7 @@ static enum renderer_result setup_texture()
     }
 
     if (transition_image_layout(
-                renderer.texture_image,
+                *texture_image,
                 VK_FORMAT_R8_SNORM,
                 VK_IMAGE_LAYOUT_UNDEFINED,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -3113,7 +3332,7 @@ static enum renderer_result setup_texture()
 
     if (copy_buffer_to_image(
                 staging_buffer,
-                renderer.texture_image,
+                *texture_image,
                 width,
                 height
             )) {
@@ -3123,7 +3342,7 @@ static enum renderer_result setup_texture()
     }
 
     if (transition_image_layout(
-                renderer.texture_image,
+                *texture_image,
                 VK_FORMAT_R8_SNORM,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -3266,22 +3485,40 @@ static enum renderer_result copy_buffer_to_image(
 
 static enum renderer_result setup_texture_view()
 {
-    VkImageViewCreateInfo view_info = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        .image = renderer.texture_image,
-        .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format = VK_FORMAT_R8_SNORM,
-        .subresourceRange = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount  = 1
+    VkImageViewCreateInfo view_info[] = {
+        {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = renderer.texture_outline,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = VK_FORMAT_R8_SNORM,
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount  = 1
+            }
+        },
+        {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = renderer.texture_solid,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = VK_FORMAT_R8_SNORM,
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount  = 1
+            }
         }
     };
 
     VkResult result = vkCreateImageView(
-            renderer.device, &view_info, NULL, &renderer.texture_image_view);
+            renderer.device, &view_info[0], NULL, &renderer.texture_outline_view);
+
+    result = vkCreateImageView(
+            renderer.device, &view_info[1], NULL, &renderer.texture_solid_view);
 
     if (result != VK_SUCCESS) {
         fprintf(
@@ -3298,28 +3535,33 @@ static enum renderer_result setup_texture_view()
 
 static enum renderer_result setup_texture_sampler()
 {
-    VkSamplerCreateInfo sampler_info = {
-        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-        .magFilter = VK_FILTER_LINEAR,
-        .minFilter = VK_FILTER_LINEAR,
-        .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
-        .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
-        .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
-        .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
-        /* TODO: anisotropy */
-        .anisotropyEnable = VK_FALSE,
-        .maxAnisotropy = renderer.limits.maxSamplerAnisotropy,
-        .unnormalizedCoordinates = VK_FALSE,
-        .compareEnable = VK_FALSE,
-        .compareOp = VK_COMPARE_OP_ALWAYS,
-        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
-        .mipLodBias = 0.0f,
-        .minLod = 0.0f,
-        .maxLod = 0.0f
+    VkSamplerCreateInfo sampler_info[] = {
+        {
+            .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+            .magFilter = VK_FILTER_LINEAR,
+            .minFilter = VK_FILTER_LINEAR,
+            .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+            .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+            .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+            .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+            /* TODO: anisotropy */
+            .anisotropyEnable = VK_FALSE,
+            .maxAnisotropy = renderer.limits.maxSamplerAnisotropy,
+            .unnormalizedCoordinates = VK_FALSE,
+            .compareEnable = VK_FALSE,
+            .compareOp = VK_COMPARE_OP_ALWAYS,
+            .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+            .mipLodBias = 0.0f,
+            .minLod = 0.0f,
+            .maxLod = 0.0f
+        }
     };
 
     VkResult result = vkCreateSampler(
-            renderer.device, &sampler_info, NULL, &renderer.texture_sampler);
+            renderer.device, &sampler_info[0], NULL, &renderer.texture_outline_sampler);
+    result = vkCreateSampler(
+            renderer.device, &sampler_info[0], NULL, &renderer.texture_solid_sampler);
+
 
     if (result != VK_SUCCESS) {
         fprintf(
@@ -3488,7 +3730,7 @@ struct atlas * atlas_create(uint32_t element_size, uint32_t elements)
     }
 
     if (transition_image_layout(
-                renderer.texture_image,
+                renderer.texture_outline,
                 VK_FORMAT_R8_SNORM,
                 VK_IMAGE_LAYOUT_UNDEFINED,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
