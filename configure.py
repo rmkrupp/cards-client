@@ -616,7 +616,7 @@ bin_target(
         ],
         is_disabled = 'generate-dfield' in args.disable_tool,
         why_disabled = 'we were generated with --disable-tool=generate-dfield',
-        targets = [all_targets]
+        targets = [all_targets, tools_targets]
     )
 
 #
