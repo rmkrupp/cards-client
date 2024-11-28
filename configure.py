@@ -486,8 +486,8 @@ w.rule(
         name = 'glslc',
         deps = 'gcc',
         depfile = '$out.d',
-        command = '$glslc -MD -MF $out.d $glsldefines -fshader-stage=$stage ' +
-                  '$glslflags $in -o $out'
+        command = '$glslc -Werror -MD -MF $out.d $glsldefines ' +
+                  '-fshader-stage=$stage $glslflags $in -o $out'
     )
 w.newline()
 
