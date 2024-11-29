@@ -20,6 +20,7 @@
 #include "renderer/renderer.h"
 
 /* TODO: configuration (see below) */
+/* TODO: smarter extension and layer stuff etc. */
 
 /* this path is prependend to any shader lookups. together, they should point
  * to the compiled (.spv) files.
@@ -156,11 +157,24 @@ struct renderer {
                              * between 0 and config.max_frames_in_flight
                              */
 
-    VkImageView texture_outline_view, texture_solid_view;
-    VkSampler texture_outline_sampler, texture_solid_sampler;
-    VkImage texture_outline, texture_solid;
-    VkDeviceMemory texture_outline_memory, texture_solid_memory;
+    //VkImageView texture_outline_view, texture_solid_view;
+    //VkSampler texture_outline_sampler, texture_solid_sampler;
+    VkImageView texture_view;
+    VkSampler texture_sampler;
+    size_t texture_max;
+    VkImage texture;
+    VkDeviceMemory texture_memory;
 
+    /*
+    VkBufferView oit_abuffer_view;
+    VkDeviceMemory oit_abuffer_memory;
+    VkBuffer oit_abuffer;
+
+    VkImageView oit_aux;
+    VkImage oit_aux;
+    */
+
+    size_t ubo_size;
     size_t n_objects;
 
     struct push_constants {
@@ -214,6 +228,8 @@ uint16_t indices[] = {
 
 struct uniform_buffer_object {
     struct matrix model;
+    uint32_t solid_index,
+             outline_index;
 };
 
 /*
@@ -269,6 +285,7 @@ static enum renderer_result setup_swap_chain();
 static enum renderer_result setup_physical_device();
 static enum renderer_result setup_logical_device();
 static enum renderer_result setup_image_views();
+//static enum renderer_result setup_oit_buffers();
 static enum renderer_result setup_descriptor_set_layout();
 static enum renderer_result setup_pipeline();
 static enum renderer_result setup_framebuffers();
@@ -278,7 +295,7 @@ static enum renderer_result setup_sync_objects();
 static enum renderer_result setup_descriptor_pool();
 static enum renderer_result setup_descriptor_sets();
 static enum renderer_result setup_texture(
-        const char * filename,
+        //const char * filename,
         VkImage * texture_image,
         VkDeviceMemory * texture_image_memory
     );
@@ -338,13 +355,15 @@ static enum renderer_result copy_buffer_to_image(
         VkBuffer buffer,
         VkImage image,
         uint32_t width,
-        uint32_t height
+        uint32_t height,
+        uint32_t layers
     );
 
 /*
  * ATLASES
  */
 
+/*
 struct atlas * atlas_create(uint32_t element_size, uint32_t element_max);
 void atlas_destroy(struct atlas * atlas);
 enum renderer_result atlas_upload(
@@ -356,6 +375,7 @@ enum renderer_result atlas_upload(
         float * width_out,
         float * height_out
     );
+*/
 
 /*
  * UTILITY FUNCTIONS
@@ -1138,6 +1158,47 @@ static enum renderer_result setup_logical_device()
     return RENDERER_OKAY;
 }
 
+/*
+static enum renderer_result setup_oit_buffers()
+{
+    // size?
+
+    if (create_buffer(
+            &renderer.oit_abuffer,
+            &renderer.oit_abuffermemory,
+            size,
+            VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL
+        )) {
+        return RENDERER_ERROR;
+    }
+
+    VkResult result = vkCreateBufferView(
+            renderer.device,
+            &(VkBufferViewCreateInfo) {
+                .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
+                .buffer = renderer.oit_abuffer,
+                .format = VK_FORMAT_R32G32_UINT,
+                .offset = 0,
+                .range = size
+            },
+            NULL,
+            &renderer.oit_abuffer_view
+        );
+
+    if (result) {
+        fprintf(
+                stderr,
+                "[renderer] vkCreateBufferView() failed (%d)\n",
+                result
+           );
+        return RENDERER_ERROR;
+    }
+
+    return RENDERER_OKAY;
+}
+*/
+
 /* create image views for every image in the swap chain */
 static enum renderer_result setup_image_views()
 {
@@ -1861,10 +1922,19 @@ static enum renderer_result setup_uniform_buffers()
         );
 
     for (uint32_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
+
+        uint32_t multiple = renderer.limits.minUniformBufferOffsetAlignment;
+        uint32_t base_size = sizeof(struct uniform_buffer_object);
+        if (base_size % multiple != 0) {
+            renderer.ubo_size = base_size + (multiple - base_size % multiple);
+        } else {
+            renderer.ubo_size = base_size;
+        }
+
         if (create_buffer(
                 &renderer.uniform_buffers[i],
                 &renderer.uniform_buffer_memories[i],
-                sizeof(struct uniform_buffer_object) * renderer.n_objects,
+                renderer.ubo_size * renderer.n_objects,
                 VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
@@ -1876,7 +1946,7 @@ static enum renderer_result setup_uniform_buffers()
                 renderer.device,
                 renderer.uniform_buffer_memories[i],
                 0,
-                sizeof(struct uniform_buffer_object) * renderer.n_objects,
+                renderer.ubo_size * renderer.n_objects,
                 0,
                 &renderer.uniform_buffers_mapped[i]
             );
@@ -2117,7 +2187,7 @@ static enum renderer_result setup_descriptor_sets()
         for (size_t j = 0; j < renderer.n_objects; j++) {
            buffer_infos[j] = (VkDescriptorBufferInfo) {
                .buffer = renderer.uniform_buffers[i],
-               .offset = sizeof(struct uniform_buffer_object) * j,
+               .offset = renderer.ubo_size * j,
                .range = sizeof(struct uniform_buffer_object)
            }; 
         }
@@ -2143,27 +2213,14 @@ static enum renderer_result setup_descriptor_sets()
                 .descriptorCount = 1,
                 .pImageInfo = &(VkDescriptorImageInfo) {
                     .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    .imageView = renderer.texture_outline_view,
-                    .sampler = renderer.texture_outline_sampler
-                }
-            },
-            {
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstSet = renderer.descriptor_sets[i],
-                .dstBinding = 2,
-                .dstArrayElement = 0,
-                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                .descriptorCount = 1,
-                .pImageInfo = &(VkDescriptorImageInfo) {
-                    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    .imageView = renderer.texture_solid_view,
-                    .sampler = renderer.texture_solid_sampler
+                    .imageView = renderer.texture_view,
+                    .sampler = renderer.texture_sampler
                 }
             }
         };
 
         vkUpdateDescriptorSets(
-                renderer.device, 3, descriptor_writes, 0, NULL);
+                renderer.device, 2, descriptor_writes, 0, NULL);
 
         free(buffer_infos);
     }
@@ -2420,6 +2477,13 @@ static enum renderer_result update_uniform_buffer(uint32_t image_index)
 
     for (size_t i = 0; i < renderer.n_objects; i++) {
         struct uniform_buffer_object ubo;
+        if (i < renderer.n_objects / 2) {
+            ubo.solid_index = 0;
+            ubo.outline_index = 1;
+        } else {
+            ubo.solid_index = 3;
+            ubo.outline_index = 3;
+        }
         if (tick % 1000 == 0) {
             quaternion_identity(&object[i].rotation);
             quaternion_from_axis_angle(&object[i].rotation, 0.0, 0.0, 1.0, (double)(rand() % 100) / 100.0 * M_PI);
@@ -2449,7 +2513,7 @@ static enum renderer_result update_uniform_buffer(uint32_t image_index)
         matrix_multiply(&ubo.model, &tmp, &tmp2);
 
         memcpy(
-                renderer.uniform_buffers_mapped[image_index] + sizeof(ubo) * i,
+                renderer.uniform_buffers_mapped[image_index] + renderer.ubo_size * i,
                 &ubo,
                 sizeof(ubo)
             );
@@ -2757,6 +2821,13 @@ enum renderer_result renderer_init(
     if (result) return result;
 
     result = setup_texture(
+            &renderer.texture,
+            &renderer.texture_memory
+        );
+    if (result) return result;
+
+    /*
+    result = setup_texture(
             "out/data/512/example.dfield",
             &renderer.texture_outline,
             &renderer.texture_outline_memory
@@ -2769,6 +2840,7 @@ enum renderer_result renderer_init(
             &renderer.texture_solid_memory
         );
     if (result) return result;
+    */
 
     result = setup_texture_view();
     if (result) return result;
@@ -2790,6 +2862,11 @@ enum renderer_result renderer_init(
 
     result = setup_image_views();
     if (result) return result;
+
+    /*
+    result = setup_oit_buffers();
+    if (result) return result;
+    */
 
     result = setup_descriptor_set_layout();
     if (result) return result;
@@ -2814,26 +2891,27 @@ enum renderer_result renderer_init(
 /* shut down the renderer and free its resources */
 void renderer_terminate()
 {
-    if (renderer.texture_outline_sampler) {
-        vkDestroySampler(renderer.device, renderer.texture_outline_sampler, NULL);
-        renderer.texture_outline_sampler = NULL;
+    if (renderer.texture_sampler) {
+        vkDestroySampler(renderer.device, renderer.texture_sampler, NULL);
+        renderer.texture_sampler = NULL;
     }
 
-    if (renderer.texture_outline_view) {
-        vkDestroyImageView(renderer.device, renderer.texture_outline_view, NULL);
-        renderer.texture_outline_view = NULL;
+    if (renderer.texture_view) {
+        vkDestroyImageView(renderer.device, renderer.texture_view, NULL);
+        renderer.texture_view = NULL;
     }
 
-    if (renderer.texture_outline) {
-        vkDestroyImage(renderer.device, renderer.texture_outline, NULL);
-        renderer.texture_outline = NULL;
+    if (renderer.texture) {
+        vkDestroyImage(renderer.device, renderer.texture, NULL);
+        renderer.texture = NULL;
     }
 
-    if (renderer.texture_outline_memory) {
-        vkFreeMemory(renderer.device, renderer.texture_outline_memory, NULL);
-        renderer.texture_outline_memory = NULL;
+    if (renderer.texture_memory) {
+        vkFreeMemory(renderer.device, renderer.texture_memory, NULL);
+        renderer.texture_memory = NULL;
     }
 
+    /*
     if (renderer.texture_solid_sampler) {
         vkDestroySampler(renderer.device, renderer.texture_solid_sampler, NULL);
         renderer.texture_solid_sampler = NULL;
@@ -2853,6 +2931,7 @@ void renderer_terminate()
         vkFreeMemory(renderer.device, renderer.texture_solid_memory, NULL);
         renderer.texture_solid_memory = NULL;
     }
+    */
 
     if (renderer.sync) {
         for (uint32_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
@@ -3260,26 +3339,48 @@ static enum renderer_result create_image(
 }
 
 static enum renderer_result setup_texture(
-        const char * filename,
         VkImage * texture_image,
         VkDeviceMemory * texture_image_memory
     )
 {
-    struct dfield dfield;
-    enum dfield_result dfield_result =
-        dfield_from_file(filename, &dfield);
 
-    if (dfield_result) {
-        fprintf(stderr, "[renderer] dfield_from_file() failed\n");
-        /* TODO renderer terminate here is triggering segfault */
-        renderer_terminate();
-        return RENDERER_ERROR;
+    const char * filenames[] = {
+        "out/data/512/snrk2-solid.dfield",
+        "out/data/512/snrk2-outline.dfield",
+        "out/data/512/gronk.dfield"
+    };
+    size_t n_filenames = sizeof(filenames) / sizeof(*filenames);
+
+    struct dfield * dfields = malloc(sizeof(*dfields) * n_filenames);
+
+    for (size_t i = 0; i < n_filenames; i++) {
+        enum dfield_result dfield_result =
+            dfield_from_file(filenames[i], &dfields[i]);
+
+        if (dfield_result) {
+            fprintf(
+                    stderr,
+                    "[renderer] dfield_from_file(%s) failed: %s\n",
+                    filenames[i],
+                    dfield_result_string(dfield_result)
+                );
+            for (size_t j = 0; j < i; j++) {
+                dfield_free(&dfields[i]);
+            }
+            free(dfields);
+
+            /* TODO renderer terminate here is triggering segfault */
+            renderer_terminate();
+            return RENDERER_ERROR;
+        }
     }
 
-    uint32_t width = dfield.width;
-    uint32_t height = dfield.height;
+    renderer.texture_max = n_filenames;
+
+    uint32_t width = dfields[0].width;
+    uint32_t height = dfields[0].height;
     VkDeviceSize size =
-        width * height * sizeof(*dfield.data);
+        width * height * sizeof(*dfields[0].data) * n_filenames;
 
     VkBuffer staging_buffer;
     VkDeviceMemory staging_buffer_memory;
@@ -3296,17 +3397,21 @@ static enum renderer_result setup_texture(
 
     void * data;
     vkMapMemory(renderer.device, staging_buffer_memory, 0, size, 0, &data);
-    memcpy(data, dfield.data, (size_t)size);
+    VkDeviceSize each_size = width * height * sizeof(*dfields[0].data);
+    for (size_t i = 0; i < n_filenames; i++) {
+        memcpy(data + each_size * i, dfields[i].data, (size_t)each_size);
+        dfield_free(&dfields[i]);
+    }
     vkUnmapMemory(renderer.device, staging_buffer_memory);
 
-    dfield_free(&dfield);
+    free(dfields);
 
     if (create_image(
                 texture_image,
                 texture_image_memory,
                 width,
                 height,
-                1,
+                n_filenames,
                 VK_FORMAT_R8_SNORM,
                 VK_IMAGE_TILING_OPTIMAL,
                 VK_IMAGE_USAGE_TRANSFER_DST_BIT |
@@ -3323,7 +3428,7 @@ static enum renderer_result setup_texture(
                 VK_FORMAT_R8_SNORM,
                 VK_IMAGE_LAYOUT_UNDEFINED,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                1
+                n_filenames
             )) {
         vkDestroyBuffer(renderer.device, staging_buffer, NULL);
         vkFreeMemory(renderer.device, staging_buffer_memory, NULL);
@@ -3334,7 +3439,8 @@ static enum renderer_result setup_texture(
                 staging_buffer,
                 *texture_image,
                 width,
-                height
+                height,
+                n_filenames
             )) {
         vkDestroyBuffer(renderer.device, staging_buffer, NULL);
         vkFreeMemory(renderer.device, staging_buffer_memory, NULL);
@@ -3346,7 +3452,7 @@ static enum renderer_result setup_texture(
                 VK_FORMAT_R8_SNORM,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                1
+                n_filenames
             )) {
         vkDestroyBuffer(renderer.device, staging_buffer, NULL);
         vkFreeMemory(renderer.device, staging_buffer_memory, NULL);
@@ -3439,7 +3545,8 @@ static enum renderer_result copy_buffer_to_image(
         VkBuffer buffer,
         VkImage image,
         uint32_t width,
-        uint32_t height
+        uint32_t height,
+        uint32_t layers
     )
 {
     VkCommandBuffer command_buffer;
@@ -3455,7 +3562,7 @@ static enum renderer_result copy_buffer_to_image(
             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
             .mipLevel = 0,
             .baseArrayLayer = 0,
-            .layerCount = 1
+            .layerCount = layers
         },
         .imageOffset = { 0, 0, 0 },
         .imageExtent = {
@@ -3488,37 +3595,21 @@ static enum renderer_result setup_texture_view()
     VkImageViewCreateInfo view_info[] = {
         {
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            .image = renderer.texture_outline,
-            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .image = renderer.texture,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY,
             .format = VK_FORMAT_R8_SNORM,
             .subresourceRange = {
                 .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
                 .baseMipLevel = 0,
                 .levelCount = 1,
                 .baseArrayLayer = 0,
-                .layerCount  = 1
-            }
-        },
-        {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            .image = renderer.texture_solid,
-            .viewType = VK_IMAGE_VIEW_TYPE_2D,
-            .format = VK_FORMAT_R8_SNORM,
-            .subresourceRange = {
-                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount  = 1
+                .layerCount  = renderer.texture_max
             }
         }
     };
 
     VkResult result = vkCreateImageView(
-            renderer.device, &view_info[0], NULL, &renderer.texture_outline_view);
-
-    result = vkCreateImageView(
-            renderer.device, &view_info[1], NULL, &renderer.texture_solid_view);
+            renderer.device, &view_info[0], NULL, &renderer.texture_view);
 
     if (result != VK_SUCCESS) {
         fprintf(
@@ -3558,10 +3649,7 @@ static enum renderer_result setup_texture_sampler()
     };
 
     VkResult result = vkCreateSampler(
-            renderer.device, &sampler_info[0], NULL, &renderer.texture_outline_sampler);
-    result = vkCreateSampler(
-            renderer.device, &sampler_info[0], NULL, &renderer.texture_solid_sampler);
-
+            renderer.device, &sampler_info[0], NULL, &renderer.texture_sampler);
 
     if (result != VK_SUCCESS) {
         fprintf(
@@ -3730,7 +3818,7 @@ struct atlas * atlas_create(uint32_t element_size, uint32_t elements)
     }
 
     if (transition_image_layout(
-                renderer.texture_outline,
+                atlas->image,
                 VK_FORMAT_R8_SNORM,
                 VK_IMAGE_LAYOUT_UNDEFINED,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
