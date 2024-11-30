@@ -515,15 +515,17 @@ static enum renderer_result setup_glfw()
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     /* TODO: configurable: window resolution, fullscreen vs windowed */
-    renderer.window = glfwCreateWindow(1920, 1080, "gronk.", glfwGetPrimaryMonitor(), NULL);
-    glfwSetFramebufferSizeCallback(
-            renderer.window, &framebuffer_resize_callback);
+    const GLFWvidmode * mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
+    renderer.window = glfwCreateWindow(mode->width, mode->height, "gronk.", glfwGetPrimaryMonitor(), NULL);
 
     if (!renderer.window) {
         fprintf(stderr, "[renderer] glfwCreateWindow() failed\n");
         renderer_terminate();
         return RENDERER_ERROR;
     }
+
+    glfwSetFramebufferSizeCallback(
+            renderer.window, &framebuffer_resize_callback);
 
     return RENDERER_OKAY;
 }
