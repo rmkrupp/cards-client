@@ -515,7 +515,7 @@ static enum renderer_result setup_glfw()
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     /* TODO: configurable: window resolution, fullscreen vs windowed */
-    renderer.window = glfwCreateWindow(1920, 1080, "gronk.", NULL, NULL);
+    renderer.window = glfwCreateWindow(1920, 1080, "gronk.", glfwGetPrimaryMonitor(), NULL);
     glfwSetFramebufferSizeCallback(
             renderer.window, &framebuffer_resize_callback);
 
@@ -1921,16 +1921,22 @@ static enum renderer_result setup_uniform_buffers()
             sizeof(*renderer.uniform_buffers_mapped)
         );
 
+    uint32_t multiple = renderer.limits.minUniformBufferOffsetAlignment;
+    uint32_t base_size = sizeof(struct uniform_buffer_object);
+    if (base_size % multiple != 0) {
+        renderer.ubo_size = base_size + (multiple - base_size % multiple);
+    } else {
+        renderer.ubo_size = base_size;
+    }
+
+    fprintf(
+            stderr,
+            "[renderer] (INFO) allocating %zu bytes for uniform buffers\n",
+            renderer.ubo_size * renderer.n_objects *
+            renderer.config.max_frames_in_flight
+        );
+
     for (uint32_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
-
-        uint32_t multiple = renderer.limits.minUniformBufferOffsetAlignment;
-        uint32_t base_size = sizeof(struct uniform_buffer_object);
-        if (base_size % multiple != 0) {
-            renderer.ubo_size = base_size + (multiple - base_size % multiple);
-        } else {
-            renderer.ubo_size = base_size;
-        }
-
         if (create_buffer(
                 &renderer.uniform_buffers[i],
                 &renderer.uniform_buffer_memories[i],
@@ -2009,8 +2015,6 @@ static enum renderer_result setup_index_buffer()
 /* create the depth buffer */
 static enum renderer_result setup_depth_image()
 {
-    printf("%u %u\n", renderer.chain_details.extent.width,
-            renderer.chain_details.extent.height);
     if (create_image(
                 &renderer.depth_image,
                 &renderer.depth_image_memory,
@@ -3381,6 +3385,13 @@ static enum renderer_result setup_texture(
     uint32_t height = dfields[0].height;
     VkDeviceSize size =
         width * height * sizeof(*dfields[0].data) * n_filenames;
+
+    fprintf(
+            stderr,
+            "[renderer] (INFO) allocating %zu bytes for %zu textures\n",
+            size,
+            n_filenames
+        );
 
     VkBuffer staging_buffer;
     VkDeviceMemory staging_buffer_memory;
