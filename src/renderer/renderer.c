@@ -359,6 +359,7 @@ static enum renderer_result copy_buffer_to_image(
         uint32_t layers
     );
 
+
 /*
  * ATLASES
  */
@@ -1923,6 +1924,39 @@ static enum renderer_result setup_uniform_buffers()
             sizeof(*renderer.uniform_buffers_mapped)
         );
 
+    /* TODO: adjust this in case other resources besides the image sampler
+     *       are used
+     */
+    if (renderer.n_objects + 1 > renderer.limits.maxPerStageResources) {
+        fprintf(
+                stderr,
+                "[renderer] (INFO) limiting object maximum from %zu to device limit %u\n",
+                renderer.n_objects,
+                renderer.limits.maxPerStageResources - 1
+            );
+        renderer.n_objects = renderer.limits.maxPerStageResources - 1;
+    }
+
+    if (renderer.n_objects > renderer.limits.maxPerStageDescriptorUniformBuffers) {
+        fprintf(
+                stderr,
+                "[renderer] (INFO) limiting object maximum from %zu to device limit %u\n",
+                renderer.n_objects,
+                renderer.limits.maxPerStageDescriptorUniformBuffers
+            );
+        renderer.n_objects = renderer.limits.maxPerStageDescriptorUniformBuffers;
+    }
+
+    if (renderer.n_objects > renderer.limits.maxDescriptorSetUniformBuffers) {
+        fprintf(
+                stderr,
+                "[renderer] (INFO) limiting object maximum from %zu to device limit %u\n",
+                renderer.n_objects,
+                renderer.limits.maxDescriptorSetUniformBuffers
+            );
+        renderer.n_objects = renderer.limits.maxDescriptorSetUniformBuffers;
+    }
+
     uint32_t multiple = renderer.limits.minUniformBufferOffsetAlignment;
     uint32_t base_size = sizeof(struct uniform_buffer_object);
     if (base_size % multiple != 0) {
@@ -2445,7 +2479,7 @@ struct object {
     struct quaternion rotation;
     float x, y, z;
     float scale;
-} object[200000];
+} * object;
 
 /* TODO: investigate push constants */
 static enum renderer_result update_uniform_buffer(uint32_t image_index)
@@ -2456,6 +2490,7 @@ static enum renderer_result update_uniform_buffer(uint32_t image_index)
     if (tick == 0) {
         srand(time(NULL));
         s = 1.0;
+        object = malloc(sizeof(*object) * renderer.n_objects);
     }
     if (tick % 1000 == 0) {
         quaternion_identity(&q_view);
@@ -2897,6 +2932,8 @@ enum renderer_result renderer_init(
 /* shut down the renderer and free its resources */
 void renderer_terminate()
 {
+    free(object);
+
     if (renderer.texture_sampler) {
         vkDestroySampler(renderer.device, renderer.texture_sampler, NULL);
         renderer.texture_sampler = NULL;
@@ -3085,20 +3122,22 @@ void renderer_terminate()
     }
 
     if (renderer.swap_chain) {
-        for (uint32_t i = 0; i < renderer.n_swap_chain_images; i++) {
-            if (renderer.swap_chain_image_views[i]) {
-                vkDestroyImageView(
-                        renderer.device,
-                        renderer.swap_chain_image_views[i],
-                        NULL
-                    );
-                renderer.swap_chain_image_views[i] = NULL;
+        if (renderer.swap_chain_image_views) {
+            for (uint32_t i = 0; i < renderer.n_swap_chain_images; i++) {
+                if (renderer.swap_chain_image_views[i]) {
+                    vkDestroyImageView(
+                            renderer.device,
+                            renderer.swap_chain_image_views[i],
+                            NULL
+                        );
+                    renderer.swap_chain_image_views[i] = NULL;
+                }
             }
+            free(renderer.swap_chain_image_views);
+            renderer.swap_chain_image_views = NULL;
         }
         free(renderer.swap_chain_images);
         renderer.swap_chain_images = NULL;
-        free(renderer.swap_chain_image_views);
-        renderer.swap_chain_image_views = NULL;
 
         vkDestroySwapchainKHR(renderer.device, renderer.swap_chain, NULL);
         renderer.swap_chain = NULL;
@@ -3349,13 +3388,23 @@ static enum renderer_result setup_texture(
         VkDeviceMemory * texture_image_memory
     )
 {
-
     const char * filenames[] = {
         "out/data/512/snrk2-solid.dfield",
         "out/data/512/snrk2-outline.dfield",
         "out/data/512/gronk.dfield"
     };
+
     size_t n_filenames = sizeof(filenames) / sizeof(*filenames);
+
+    if (n_filenames > renderer.limits.maxImageArrayLayers) {
+        fprintf(
+                stderr,
+                "[renderer] physical device does not support sufficient image array layers (required %zu, supported %u)\n",
+                n_filenames,
+                renderer.limits.maxImageArrayLayers
+            );
+        return RENDERER_ERROR;
+    }
 
     struct dfield * dfields = malloc(sizeof(*dfields) * n_filenames);
 
@@ -3371,7 +3420,7 @@ static enum renderer_result setup_texture(
                     dfield_result_string(dfield_result)
                 );
             for (size_t j = 0; j < i; j++) {
-                dfield_free(&dfields[i]);
+                dfield_free(&dfields[j]);
             }
             free(dfields);
 
