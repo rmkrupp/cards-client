@@ -2050,42 +2050,6 @@ static enum renderer_result setup_uniform_buffers()
             sizeof(*renderer.uniform_buffers_mapped)
         );
 
-    /* TODO: adjust this in case other resources besides the image sampler
-     *       are used
-     */
-    uint32_t limit = renderer.limits.maxPerStageResources;
-    if (renderer.n_objects + 1 > limit) {
-        fprintf(
-                stderr,
-                "[renderer] (INFO) limiting object maximum from %zu to device limit %u\n",
-                renderer.n_objects,
-                limit - 1
-            );
-        renderer.n_objects = limit - 1;
-    }
-
-    if (renderer.n_objects > renderer.limits.maxPerStageDescriptorUniformBuffers) {
-        fprintf(
-                stderr,
-                "[renderer] (INFO) limiting object maximum from %zu to device limit %u\n",
-                renderer.n_objects,
-                renderer.limits.maxPerStageDescriptorUniformBuffers
-            );
-        renderer.n_objects = renderer.limits.maxPerStageDescriptorUniformBuffers;
-    }
-
-    limit = renderer.limits.maxDescriptorSetUniformBuffers;
-    if (renderer.n_objects > limit) {
-        fprintf(
-                stderr,
-                "[renderer] (INFO) limiting object maximum from %zu to device limit %u\n",
-                renderer.n_objects,
-                limit
-            );
-        renderer.n_objects = limit;
-    }
-
-    //uint32_t multiple = renderer.limits.minUniformBufferOffsetAlignment;
     uint32_t multiple = 16;
     uint32_t base_size = sizeof(struct uniform_buffer_object);
     if (base_size % multiple != 0) {
