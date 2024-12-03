@@ -29,6 +29,10 @@
 #define SHADER_BASE_PATH "out/shaders"
 #endif /* SHADER_BASE_PATH */
 
+#ifndef TEXTURE_BASE_PATH
+#define TEXTURE_BASE_PATH "out/data"
+#endif /* TEXTURE_BASE_PATH */
+
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
@@ -3716,18 +3720,18 @@ static enum renderer_result setup_texture(
     )
 {
     const char * filenames[] = {
-        "out/data/soho/512/front-wall-solid.dfield",
-        "out/data/soho/512/front-wall-outline.dfield",
-        "out/data/soho/512/side-wall-solid.dfield",
-        "out/data/soho/512/side-wall-outline.dfield",
-        "out/data/soho/512/roof-solid.dfield",
-        "out/data/soho/512/roof-outline.dfield",
-        "out/data/soho/512/rear-wall-solid.dfield",
-        "out/data/soho/512/rear-wall-outline.dfield",
-        "out/data/soho/512/rear-wall-interior-solid.dfield",
-        "out/data/soho/512/rear-wall-interior-outline.dfield",
-        "out/data/soho/512/front-wall-interior-solid.dfield",
-        "out/data/soho/512/front-wall-interior-outline.dfield",
+        TEXTURE_BASE_PATH "/soho/512/front-wall-solid.dfield",
+        TEXTURE_BASE_PATH "/soho/512/front-wall-outline.dfield",
+        TEXTURE_BASE_PATH "/soho/512/side-wall-solid.dfield",
+        TEXTURE_BASE_PATH "/soho/512/side-wall-outline.dfield",
+        TEXTURE_BASE_PATH "/soho/512/roof-solid.dfield",
+        TEXTURE_BASE_PATH "/soho/512/roof-outline.dfield",
+        TEXTURE_BASE_PATH "/soho/512/rear-wall-solid.dfield",
+        TEXTURE_BASE_PATH "/soho/512/rear-wall-outline.dfield",
+        TEXTURE_BASE_PATH "/soho/512/rear-wall-interior-solid.dfield",
+        TEXTURE_BASE_PATH "/soho/512/rear-wall-interior-outline.dfield",
+        TEXTURE_BASE_PATH "/soho/512/front-wall-interior-solid.dfield",
+        TEXTURE_BASE_PATH "/soho/512/front-wall-interior-outline.dfield",
     };
 
     size_t n_filenames = sizeof(filenames) / sizeof(*filenames);
