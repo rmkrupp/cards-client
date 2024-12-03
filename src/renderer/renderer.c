@@ -2292,7 +2292,8 @@ static enum renderer_result setup_descriptor_sets()
                     .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     .imageView = renderer.texture_view,
                     .sampler = renderer.texture_sampler
-                }
+                },
+                .pTexelBufferView = NULL
             }
         };
 
