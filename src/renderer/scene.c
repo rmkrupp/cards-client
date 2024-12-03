@@ -30,7 +30,7 @@
 #define TEXTURE_RES "512"
 #endif /* TEXTURE_RES */
 
-constexpr size_t n_raindrops = 10000;
+constexpr size_t n_raindrops = 100000;
 size_t rain_start, rain_stop;
 struct raindrop {
     bool alive;
@@ -79,12 +79,13 @@ void soho_step(struct scene * scene)
         camera_tick++;
     }
 
+#pragma omp parallel for
     for (size_t i = rain_start; i < rain_stop; i++) {
         struct raindrop * drop = &raindrops[i - rain_start];
         if (drop->alive) {
             drop->velocity += 0.0005;
-            drop->y -= drop->velocity;
-            drop->x -= drop->velocity / 5.0;
+            drop->y -= drop->velocity / 2.0;
+            drop->x -= drop->velocity / 10.0;
             if (drop->y < -0.5) {
                 drop->alive = false;
                 scene->objects[i].enabled = false;

@@ -193,7 +193,7 @@ struct renderer {
     } push_constants;
 
 } renderer = {
-    .n_objects = 16 * 1048
+    .n_objects = 100 * 1048
 };
 
 struct atlas {
@@ -543,7 +543,7 @@ static enum renderer_result setup_glfw()
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     /* TODO: configurable: window resolution, fullscreen vs windowed */
     const GLFWvidmode * mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
-    renderer.window = glfwCreateWindow(mode->width, mode->height, "gronk.", glfwGetPrimaryMonitor(), NULL);
+    renderer.window = glfwCreateWindow(mode->width, mode->height, "gronk.", NULL, NULL);
 
     if (!renderer.window) {
         fprintf(stderr, "[renderer] glfwCreateWindow() failed\n");
@@ -2633,6 +2633,7 @@ static enum renderer_result update_uniform_buffer(uint32_t image_index)
             (float)renderer.chain_details.extent.height
         );
 
+#pragma omp parallel for
     for (size_t i = 0; i < renderer.scene.n_objects; i++) {
         struct matrix matrix_translate;
         struct matrix matrix_rotate;
