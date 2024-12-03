@@ -29,12 +29,10 @@
 #define SHADER_BASE_PATH "out/shaders"
 #endif /* SHADER_BASE_PATH */
 
-#ifndef TEXTURE_BASE_PATH
-#define TEXTURE_BASE_PATH "out/data"
-#endif /* TEXTURE_BASE_PATH */
-
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
+
+#include "renderer/scene.h"
 
 #include "dfield.h"
 #include "util/sorted_set.h"
@@ -85,6 +83,9 @@ struct renderer {
           present; /* the presentation queue family */
     } queue_families; /* the queue families */
 
+    bool anisotropy;
+    bool sample_shading;
+
     VkDevice device; /* the logical device, created by setup_logical_device()
                       */
     VkQueue graphics_queue,
@@ -120,6 +121,10 @@ struct renderer {
     VkImage depth_image;
     VkDeviceMemory depth_image_memory;
     VkImageView depth_image_view;
+
+    VkImage color_image;
+    VkDeviceMemory color_image_memory;
+    VkImageView color_image_view;
 
     /* from setup_descriptor_set_layout() */
     VkDescriptorSetLayout descriptor_set_layout;
@@ -161,9 +166,7 @@ struct renderer {
                              * between 0 and config.max_frames_in_flight
                              */
 
-    //VkImageView texture_outline_view, texture_solid_view;
-    //VkSampler texture_outline_sampler, texture_solid_sampler;
-    VkImageView texture_view;
+    VkImageView texture_view; /* the texture array and related data */
     VkSampler texture_sampler;
     size_t texture_max;
     VkImage texture;
@@ -178,8 +181,11 @@ struct renderer {
     VkImage oit_aux;
     */
 
-    size_t ubo_size;
-    size_t n_objects;
+    size_t ubo_size; /* the padded size of a uniform_buffer_object */
+
+    size_t n_objects; /* the maximum number of objects supported */
+
+    struct scene scene; /* the loaded scene */
 
     struct push_constants {
         struct matrix view,
@@ -237,24 +243,6 @@ struct uniform_buffer_object {
              outline_index;
 };
 
-/*
-struct objects {
-    struct quaternion rotation;
-    double x, y, z;
-} objects[10] = {
-    { .x = 0.0, .y = 0.0, .z = 0.0 },
-    { .x = 0.0, .y = 0.0, .z = 0.0 },
-    { .x = 0.0, .y = 0.0, .z = 0.0 },
-    { .x = 0.0, .y = 0.0, .z = 0.0 },
-    { .x = 0.0, .y = 0.0, .z = 0.0 },
-    { .x = 0.0, .y = 0.0, .z = 0.0 },
-    { .x = 0.0, .y = 0.0, .z = 0.0 },
-    { .x = 0.0, .y = 0.0, .z = 0.0 },
-    { .x = 0.0, .y = 0.0, .z = 0.0 },
-    { .x = 0.0, .y = 0.0, .z = 0.0 }
-};
-*/
-
 /*****************************************************************************
  *                           FUNCTIONS IN THIS FILE                          *
  *****************************************************************************/
@@ -299,12 +287,12 @@ static enum renderer_result setup_depth_image();
 static enum renderer_result setup_sync_objects();
 static enum renderer_result setup_descriptor_pool();
 static enum renderer_result setup_descriptor_sets();
+static enum renderer_result setup_scene();
+static void destroy_scene();
 static enum renderer_result setup_texture(
-        //const char * filename,
         VkImage * texture_image,
         VkDeviceMemory * texture_image_memory
     );
-//static enum renderer_result setup_texture();
 static enum renderer_result setup_texture_view();
 static enum renderer_result setup_texture_sampler();
 
@@ -344,6 +332,7 @@ static enum renderer_result create_image(
         uint32_t width,
         uint32_t height,
         uint32_t layers,
+        VkSampleCountFlagBits samples,
         VkFormat format,
         VkImageTiling tiling,
         VkImageUsageFlags usage,
@@ -364,6 +353,37 @@ static enum renderer_result copy_buffer_to_image(
         uint32_t layers
     );
 
+static VkSampleCountFlagBits get_msaa_samples()
+{
+    VkSampleCountFlags counts =
+        renderer.limits.framebufferColorSampleCounts &
+        renderer.limits.framebufferDepthSampleCounts;
+
+    VkSampleCountFlagBits support_bits;
+
+    if (counts & VK_SAMPLE_COUNT_64_BIT) {
+        support_bits = VK_SAMPLE_COUNT_64_BIT;
+    } else if (counts & VK_SAMPLE_COUNT_32_BIT) {
+        support_bits = VK_SAMPLE_COUNT_32_BIT;
+    } else if (counts & VK_SAMPLE_COUNT_16_BIT) {
+        support_bits = VK_SAMPLE_COUNT_16_BIT;
+    } else if (counts & VK_SAMPLE_COUNT_8_BIT) {
+        support_bits = VK_SAMPLE_COUNT_8_BIT;
+    } else if (counts & VK_SAMPLE_COUNT_4_BIT) {
+        support_bits = VK_SAMPLE_COUNT_4_BIT;
+    } else if (counts & VK_SAMPLE_COUNT_2_BIT) {
+        support_bits = VK_SAMPLE_COUNT_2_BIT;
+    } else {
+        support_bits = VK_SAMPLE_COUNT_1_BIT;
+    }
+
+    while (!(counts & support_bits) ||
+            support_bits > renderer.config.msaa_samples) {
+        support_bits >>= 1;
+    }
+
+    return support_bits;
+}
 
 /*
  * ATLASES
@@ -1062,6 +1082,16 @@ static enum renderer_result setup_physical_device()
             continue;
         }
 
+        if ((device_properties.limits.framebufferColorSampleCounts &
+                device_properties.limits.framebufferDepthSampleCounts) ==
+                VK_SAMPLE_COUNT_1_BIT) {
+            fprintf(
+                    stderr,
+                    "[renderer] (INFO) device does not support multisampling\n"
+                );
+            continue;
+        }
+
         if (device_properties.deviceType ==
                 VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
             candidate = devices[i];
@@ -1120,13 +1150,33 @@ static enum renderer_result setup_logical_device()
         VK_KHR_SWAPCHAIN_EXTENSION_NAME
     };
 
+    VkPhysicalDeviceFeatures features;
+    vkGetPhysicalDeviceFeatures(renderer.physical_device, &features);
+
+    if (features.samplerAnisotropy && renderer.config.anisotropic_filtering) {
+        fprintf(
+                stderr,
+                "[renderer] (INFO) enabling anisotropic filtering\n"
+            );
+        renderer.anisotropy = true;
+    }
+
+    if (features.sampleRateShading && renderer.config.sample_shading) {
+        fprintf(
+                stderr,
+                "[renderer] (INFO) enabling sample shading\n"
+            );
+        renderer.sample_shading = true;
+    }
+
     VkDeviceCreateInfo device_create_info = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .pQueueCreateInfos = queue_create_info,
         .queueCreateInfoCount =
             sizeof(queue_create_info) / sizeof(*queue_create_info),
         .pEnabledFeatures = &(VkPhysicalDeviceFeatures){
-            .samplerAnisotropy = VK_TRUE
+            .samplerAnisotropy = renderer.anisotropy ? VK_TRUE : VK_FALSE,
+            .sampleRateShading = renderer.sample_shading ? VK_TRUE : VK_FALSE,
         },
         .enabledExtensionCount = sizeof(extensions) / sizeof(*extensions),
         .ppEnabledExtensionNames = extensions,
@@ -1281,6 +1331,33 @@ static enum renderer_result setup_image_views()
             &create_info,
             NULL,
             &renderer.depth_image_view
+        );
+
+    VkImageViewCreateInfo color_create_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = renderer.color_image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = renderer.chain_details.format.format,
+        .components = {
+            .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+            .a = VK_COMPONENT_SWIZZLE_IDENTITY
+        },
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1
+        }
+    };
+
+    result = vkCreateImageView(
+            renderer.device,
+            &color_create_info,
+            NULL,
+            &renderer.color_image_view
         );
 
     if (result != VK_SUCCESS) {
@@ -1460,29 +1537,51 @@ static enum renderer_result setup_pipeline()
         return RENDERER_ERROR;
     }
 
+    size_t msaa = get_msaa_samples();
+    if (msaa != VK_SAMPLE_COUNT_1_BIT) {
+        fprintf(
+                stderr,
+                "[renderer] (INFO) enabling msaa (x%zu)\n",
+                msaa
+            );
+    }
+
     VkRenderPassCreateInfo render_pass_info = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-        .attachmentCount = 2,
+        .attachmentCount = 3,
         .pAttachments = (VkAttachmentDescription[]) {
             {
                 .format = renderer.chain_details.format.format,
-                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .samples = get_msaa_samples(),
                 .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
                 .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
                 .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
                 .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
                 .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+                .finalLayout = 
+                    get_msaa_samples() > 1 ?
+                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL :
+                    VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
             },
             {
                 .format = VK_FORMAT_D32_SFLOAT,
-                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .samples = get_msaa_samples(),
                 .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
                 .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
                 .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
                 .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
                 .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
                 .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+            },
+            {
+                .format = renderer.chain_details.format.format,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
             }
         },
         .subpassCount = 1,
@@ -1501,6 +1600,12 @@ static enum renderer_result setup_pipeline()
                         .attachment = 1,
                         .layout =
                             VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+                    }
+                },
+                .pResolveAttachments = (VkAttachmentReference[]) {
+                    {
+                        .attachment = 2,
+                        .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
                     }
                 },
                 .preserveAttachmentCount = 0
@@ -1645,8 +1750,10 @@ static enum renderer_result setup_pipeline()
         },
         .pMultisampleState = &(VkPipelineMultisampleStateCreateInfo) {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-            .sampleShadingEnable = VK_FALSE,
-            .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT
+            .sampleShadingEnable =
+                renderer.sample_shading ? VK_TRUE : VK_FALSE,
+            .minSampleShading = 0.2f,
+            .rasterizationSamples = get_msaa_samples()
         },
         .pDepthStencilState = &(VkPipelineDepthStencilStateCreateInfo) {
             .sType =
@@ -1718,10 +1825,11 @@ static enum renderer_result setup_framebuffers()
         VkFramebufferCreateInfo framebuffer_info = {
             .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             .renderPass = renderer.render_pass,
-            .attachmentCount = 2,
+            .attachmentCount = 3,
             .pAttachments = (VkImageView[]) {
-                renderer.swap_chain_image_views[i],
-                renderer.depth_image_view
+                renderer.color_image_view,
+                renderer.depth_image_view,
+                renderer.swap_chain_image_views[i]
             },
             .width = renderer.chain_details.extent.width,
             .height = renderer.chain_details.extent.height,
@@ -2082,9 +2190,27 @@ static enum renderer_result setup_depth_image()
                 renderer.chain_details.extent.width,
                 renderer.chain_details.extent.height,
                 1,
+                get_msaa_samples(),
                 VK_FORMAT_D32_SFLOAT,
                 VK_IMAGE_TILING_OPTIMAL,
                 VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+            )) {
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    if (create_image(
+                &renderer.color_image,
+                &renderer.color_image_memory,
+                renderer.chain_details.extent.width,
+                renderer.chain_details.extent.height,
+                1,
+                get_msaa_samples(),
+                renderer.chain_details.format.format,
+                VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT |
+                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
             )) {
         renderer_terminate();
@@ -2512,47 +2638,25 @@ static enum renderer_result record_command_buffer(
     return RENDERER_OKAY;
 }
 
-struct object {
-    struct quaternion rotation;
-    float cx, cy, cz;
-    float x, y, z;
-    float scale;
-    uint32_t solid_index,
-             outline_index;
-} * object;
 
 /* TODO: investigate push constants */
 static enum renderer_result update_uniform_buffer(uint32_t image_index)
 {
-    /* first time setup */
-    constexpr size_t object_max = 12;
-    static struct quaternion q_view, q_view_adj;
-    static size_t tick;
-    if (tick == 0) {
-        quaternion_identity(&q_view);
-        //quaternion_from_axis_angle(&q_view, 0.0, 1.0, 0.0, -M_PI / 2 * 0.95);
-        quaternion_from_axis_angle(&q_view_adj, 0.0, 1.0, 0.0, M_PI / 1000);
-        object = malloc(sizeof(*object) * object_max);
-    }
-
     /* push constants */
-    struct matrix view_matrix_a, view_matrix_b, view_matrix_c;
-    //quaternion_multiply(&q_view, &q_view, &q_view_adj);
-    //matrix_translation(&view_matrix_b, 0 - ((float)(tick % 1000)) / 100.0, 0, 5 - ((float)(tick % 1000)) / 200.0);
-    //matrix_translation(&view_matrix_b, 2, 0, 0.1);
-    matrix_translation(&view_matrix_b, 0, 0, 2);
-    float r = 2.0;
-    float z = r * cos((float)tick / 100.0);
-    float x = r * sin((float)tick / 100.0);
-    //float x = -0.5;
-    matrix_translation(&view_matrix_b, x, 0.25, z);
-    quaternion_from_axis_angle(&q_view, 0.0, -1.0, 0.0, atan2(x, z));
-    quaternion_normalize(&q_view, &q_view);
-    quaternion_matrix(&view_matrix_a, &q_view);
+    struct matrix view_matrix_a, view_matrix_b;
 
-    matrix_multiply(&view_matrix_c, &view_matrix_a, &view_matrix_b);
+    quaternion_normalize(
+            &renderer.scene.camera.rotation, &renderer.scene.camera.rotation);
+    quaternion_matrix(&view_matrix_a, &renderer.scene.camera.rotation);
+    matrix_translation(
+            &view_matrix_b,
+            renderer.scene.camera.x,
+            renderer.scene.camera.y,
+            renderer.scene.camera.z
+        );
 
-    renderer.push_constants.view = view_matrix_c;
+    matrix_multiply(
+            &renderer.push_constants.view, &view_matrix_a, &view_matrix_b);
     matrix_perspective(
             &renderer.push_constants.projection,
             -0.1f,
@@ -2562,341 +2666,47 @@ static enum renderer_result update_uniform_buffer(uint32_t image_index)
             (float)renderer.chain_details.extent.height
         );
 
-
-    if (tick == 0) {
-    /* object 0: the front wall */
-    object[0] = (struct object) {
-        .rotation = object[0].rotation,
-        .cx = 0.0,
-        .cy = 0.0,
-        .cz = 0.0,
-        .x = 0.0,
-        .y = 0.0,
-        .z = 0.0,
-        .scale = 1.0,
-        .solid_index = 0,
-        .outline_index = 1
-    };
-    if (tick == 0) {
-        quaternion_identity(&object[0].rotation);
-        //quaternion_from_axis_angle(&object[0].rotation, 0.0, 1.0, 0.0, M_PI);
-    }
-    /*
-    struct quaternion tmp;
-    quaternion_from_axis_angle(
-            &tmp, 0.0, 1.0, 0.0, M_PI / 100.0);
-    quaternion_multiply(&object[0].rotation, &object[0].rotation, &tmp);
-    */
-
-    /* object 1 and 2: the side walls */
-    object[1] = (struct object) {
-        .cx = -0.25,
-        .cy = 0.0,
-        .cz = 0.0,
-        .x = 0.5,
-        .y = 0.0,
-        .z = 0.25,
-        .scale = 1.0,
-        .solid_index = 2,
-        .outline_index = 3
-    };
-    object[2] = (struct object) {
-        .cx = -0.25,
-        .cy = 0.0,
-        .cz = 0.0,
-        .x = -0.5,
-        .y = 0.0,
-        .z = 0.25,
-        .scale = 1.0,
-        .solid_index = 2,
-        .outline_index = 3
-    };
-    quaternion_from_axis_angle(
-            &object[1].rotation, 0.0, 1.0, 0.0, -M_PI / 2.0);
-    quaternion_from_axis_angle(
-            &object[2].rotation, 0.0, 1.0, 0.0, M_PI / 2.0);
-
-    /* object 3 and 4: the roof */
-    object[3] = (struct object) {
-        .cx = -0.0,
-        .cy = 0.0,
-        .cz = 0.0,
-        .x = 0.0,
-        .y = 0.252,
-        .z = 0.25,
-        .scale = 1.05,
-        .solid_index = 4,
-        .outline_index = 5
-    };
-    object[4] = (struct object) {
-        .cx = -0.0,
-        .cy = 0.0,
-        .cz = 0.0,
-        .x = -0.0,
-        .y = 0.252,
-        .z = 0.25,
-        .scale = 1.05,
-        .solid_index = 4,
-        .outline_index = 5
-    };
-
-    /* object 5 and 6: the inside of the roof */
-    object[5] = (struct object) {
-        .cx = -0.0,
-        .cy = 0.0,
-        .cz = 0.0,
-        .x = 0.0,
-        .y = 0.252,
-        .z = 0.25,
-        .scale = 1.05,
-        .solid_index = 4,
-        .outline_index = 12
-    };
-    object[6] = (struct object) {
-        .cx = -0.0,
-        .cy = 0.0,
-        .cz = 0.0,
-        .x = -0.0,
-        .y = 0.252,
-        .z = 0.25,
-        .scale = 1.05,
-        .solid_index = 4,
-        .outline_index = 12
-    };
-    
-    struct quaternion q_tmp;
-    quaternion_from_axis_angle(
-            &q_tmp, 0.0, 1.0, 0.0, M_PI);
-
-    quaternion_from_axis_angle(
-            &object[3].rotation, 1.0, 0.0, 0.0, M_PI / 4.0);
-
-    quaternion_from_axis_angle(
-            &object[4].rotation, 1.0, 0.0, 0.0, -M_PI / 4.0);
-    quaternion_multiply(
-            &object[4].rotation, &object[4].rotation, &q_tmp);
-
-    quaternion_from_axis_angle(
-            &object[5].rotation, 1.0, 0.0, 0.0, M_PI / 4.0);
-    quaternion_multiply(
-            &object[5].rotation, &object[5].rotation, &q_tmp);
-
-    quaternion_from_axis_angle(
-            &object[6].rotation, 1.0, 0.0, 0.0, -M_PI / 4.0);
-//    quaternion_multiply(
-//            &object[6].rotation, &object[6].rotation, &q_tmp);
-
-    /* object 7 and 8: the rear wall */
-    object[7] = (struct object) {
-        .cx = -0.0,
-        .cy = 0.0,
-        .cz = 0.0,
-        .x = 0.0,
-        .y = 0.0,
-        .z = 0.5,
-        .scale = 1.0,
-        .solid_index = 6,
-        .outline_index = 7
-    };
-    object[8] = (struct object) {
-        .cx = -0.0,
-        .cy = 0.0,
-        .cz = 0.0,
-        .x = 0.0,
-        .y = 0.0,
-        .z = 0.5,
-        .scale = 1.0,
-        .solid_index = 8,
-        .outline_index = 9
-    };
-
-    quaternion_identity(&object[7].rotation);
-    quaternion_multiply(
-            &object[7].rotation, &object[7].rotation, &q_tmp);
-
-    quaternion_identity(&object[8].rotation);
-
-    /* object 9 and 10: the side wall interiors */
-    object[9] = (struct object) {
-        .cx = -0.25,
-        .cy = 0.0,
-        .cz = 0.0,
-        .x = 0.5,
-        .y = 0.0,
-        .z = 0.25,
-        .scale = 1.0,
-        .solid_index = 2,
-        .outline_index = 3
-    };
-    object[10] = (struct object) {
-        .cx = -0.25,
-        .cy = 0.0,
-        .cz = 0.0,
-        .x = -0.5,
-        .y = 0.0,
-        .z = 0.25,
-        .scale = 1.0,
-        .solid_index = 2,
-        .outline_index = 3
-    };
-    quaternion_from_axis_angle(
-            &object[9].rotation, 0.0, 1.0, 0.0, -M_PI / 2.0);
-    quaternion_multiply(
-            &object[9].rotation, &object[9].rotation, &q_tmp);
-    quaternion_from_axis_angle(
-            &object[10].rotation, 0.0, 1.0, 0.0, M_PI / 2.0);
-    quaternion_multiply(
-            &object[10].rotation, &object[10].rotation, &q_tmp);
-
-    /* object 11: the front interior wall */
-    object[11] = (struct object) {
-        .rotation = object[0].rotation,
-        .cx = 0.0,
-        .cy = 0.0,
-        .cz = 0.0,
-        .x = 0.0,
-        .y = 0.0,
-        .z = 0.0,
-        .scale = 1.0,
-        .solid_index = 10,
-        .outline_index = 11
-    };
-
-    quaternion_identity(&object[11].rotation);
-    quaternion_multiply(
-            &object[11].rotation, &object[11].rotation, &q_tmp);
-
-
-    }
-    
-    for (size_t i = 0; i < object_max; i++) {
+    for (size_t i = 0; i < renderer.scene.n_objects; i++) {
         struct matrix matrix_translate;
         struct matrix matrix_rotate;
         struct uniform_buffer_object ubo;
 
-        struct quaternion rotate_everything;
-        quaternion_from_axis_angle(&rotate_everything, 0.0, 1.0, 0.0, 0.001);
-        //quaternion_multiply(&object[i].rotation, &object[i].rotation, &rotate_everything);
-        quaternion_normalize(&object[i].rotation, &object[i].rotation);
-
         matrix_translation_scale(
                 &ubo.model,
-                object[i].x,
-                object[i].y,
-                object[i].z,
-                object[i].scale,
-                object[i].scale,
-                object[i].scale
+                renderer.scene.objects[i].x,
+                renderer.scene.objects[i].y,
+                renderer.scene.objects[i].z,
+                renderer.scene.objects[i].scale,
+                renderer.scene.objects[i].scale,
+                renderer.scene.objects[i].scale
             );
 
         matrix_translation(
                 &matrix_translate,
-                object[i].cx,
-                object[i].cy,
-                object[i].cz
+                renderer.scene.objects[i].cx,
+                renderer.scene.objects[i].cy,
+                renderer.scene.objects[i].cz
             );
 
         quaternion_matrix(
                 &matrix_rotate,
-                &object[i].rotation
+                &renderer.scene.objects[i].rotation
             );
 
         matrix_multiply(&ubo.model, &ubo.model, &matrix_rotate);
         matrix_multiply(&ubo.model, &ubo.model, &matrix_translate);
-        ubo.solid_index = object[i].solid_index;
-        ubo.outline_index = object[i].outline_index;
+        ubo.solid_index = renderer.scene.objects[i].solid_index;
+        ubo.outline_index = renderer.scene.objects[i].outline_index;
 
         memcpy(
-                renderer.uniform_buffers_mapped[image_index] + renderer.ubo_size * i,
-//                renderer.uniform_buffers_mapped[image_index] + sizeof(struct uniform_buffer_object) * i,
+                renderer.uniform_buffers_mapped[image_index] +
+                renderer.ubo_size * i,
                 &ubo,
                 sizeof(ubo)
             );
     }
     
-    tick++;
     return RENDERER_OKAY;
-
-    /*
-    static struct quaternion q_view;
-    static float s;
-    if (tick == 0) {
-        srand(time(NULL));
-        s = 1.0;
-        object = malloc(sizeof(*object) * renderer.n_objects);
-    }
-    if (tick % 1000 == 0) {
-        quaternion_identity(&q_view);
-        //s = -s;
-    }
-
-    struct quaternion q_adj_view;
-    quaternion_from_axis_angle(&q_adj_view, 0.0, s, 0.0, M_PI / 1000.0);
-    quaternion_multiply(&q_view, &q_view, &q_adj_view);
-
-    struct matrix view_matrix_a, view_matrix_b, view_matrix_c;
-    quaternion_matrix(&view_matrix_a, &q_view);
-    matrix_translation(&view_matrix_b, 0, 0, 5 - ((float)(tick % 1000)) / 100.0);
-    matrix_multiply(&view_matrix_c, &view_matrix_a, &view_matrix_b);
-
-    renderer.push_constants.view = view_matrix_c;
-    matrix_perspective(
-            &renderer.push_constants.projection,
-            -0.1f,
-            -1000.0f,
-            3.14159 / 4,
-            renderer.chain_details.extent.width /
-            (float)renderer.chain_details.extent.height
-        );
-
-    for (size_t i = 0; i < renderer.n_objects; i++) {
-        struct uniform_buffer_object ubo;
-        if (i < renderer.n_objects / 2) {
-            ubo.solid_index = 0;
-            ubo.outline_index = 1;
-        } else {
-            ubo.solid_index = 3;
-            ubo.outline_index = 3;
-        }
-        if (tick % 1000 == 0) {
-            quaternion_identity(&object[i].rotation);
-            quaternion_from_axis_angle(&object[i].rotation, 0.0, 0.0, 1.0, (double)(rand() % 100) / 100.0 * M_PI);
-            object[i].x = ((float)(rand() % 40) - 20.0) / 10.0;
-            object[i].y = ((float)(rand() % 40) - 20.0) / 10.0;
-            object[i].z = ((float)(rand() % 40000) - 20000.0) / 10000.0;
-            if (i == 0) {
-                object[i].scale = 1000.0;
-                object[i].x = 0;
-                object[i].y = 0;
-                object[i].z = -50.0;
-            } else {
-                object[i].scale = ((float)(rand() % 10)) / 5.0;
-            }
-        } else {
-            struct quaternion q;
-            quaternion_from_axis_angle(&q, 0.0, 0.0, 1.0, 0.0001);
-            quaternion_multiply(&object[i].rotation, &object[i].rotation, &q);
-            quaternion_normalize(&object[i].rotation, &object[i].rotation);
-        }
-
-        struct matrix tmp;
-        struct matrix tmp2;
-        float z = -(float)(tick % 600) / 100;
-        matrix_translation_scale(&tmp, object[i].x, object[i].y, object[i].z + 0.0 * z, object[i].scale, object[i].scale, 1.0);
-        quaternion_matrix(&tmp2, &object[i].rotation);
-        matrix_multiply(&ubo.model, &tmp, &tmp2);
-
-        memcpy(
-                renderer.uniform_buffers_mapped[image_index] + renderer.ubo_size * i,
-                &ubo,
-                sizeof(ubo)
-            );
-    }
-
-    tick++;
-
-    return RENDERER_OKAY;
-    */
 }
 /* draw a frame */
 static enum renderer_result renderer_draw_frame()
@@ -2956,6 +2766,9 @@ static enum renderer_result renderer_draw_frame()
             )) {
         return RENDERER_ERROR;
     }
+
+    /* for now, step here */
+    renderer.scene.step(&renderer.scene);
 
     if (update_uniform_buffer(renderer.current_frame)) {
         return RENDERER_ERROR;
@@ -3055,6 +2868,29 @@ static enum renderer_result renderer_recreate_swap_chain()
             }
         }
         free(renderer.framebuffers);
+    }
+
+    if (renderer.color_image_memory) {
+        vkFreeMemory(renderer.device, renderer.color_image_memory, NULL);
+        renderer.color_image_memory = NULL;
+    }
+
+    if (renderer.color_image) {
+        vkDestroyImage(
+                renderer.device,
+                renderer.color_image,
+                NULL
+                );
+        renderer.color_image = NULL;
+    }
+
+    if (renderer.color_image_view) {
+        vkDestroyImageView(
+                renderer.device,
+                renderer.color_image_view,
+                NULL
+                );
+        renderer.color_image_view = NULL;
     }
 
     if (renderer.depth_image_memory) {
@@ -3195,6 +3031,9 @@ enum renderer_result renderer_init(
     result = setup_swap_chain();
     if (result) return result;
 
+    result = setup_scene();
+    if (result) return result;
+
     result = setup_texture(
             &renderer.texture,
             &renderer.texture_memory
@@ -3250,7 +3089,7 @@ enum renderer_result renderer_init(
 /* shut down the renderer and free its resources */
 void renderer_terminate()
 {
-    free(object);
+    destroy_scene();
 
     if (renderer.texture_sampler) {
         vkDestroySampler(renderer.device, renderer.texture_sampler, NULL);
@@ -3271,28 +3110,6 @@ void renderer_terminate()
         vkFreeMemory(renderer.device, renderer.texture_memory, NULL);
         renderer.texture_memory = NULL;
     }
-
-    /*
-    if (renderer.texture_solid_sampler) {
-        vkDestroySampler(renderer.device, renderer.texture_solid_sampler, NULL);
-        renderer.texture_solid_sampler = NULL;
-    }
-
-    if (renderer.texture_solid_view) {
-        vkDestroyImageView(renderer.device, renderer.texture_solid_view, NULL);
-        renderer.texture_solid_view = NULL;
-    }
-
-    if (renderer.texture_solid) {
-        vkDestroyImage(renderer.device, renderer.texture_solid, NULL);
-        renderer.texture_solid = NULL;
-    }
-
-    if (renderer.texture_solid_memory) {
-        vkFreeMemory(renderer.device, renderer.texture_solid_memory, NULL);
-        renderer.texture_solid_memory = NULL;
-    }
-    */
 
     if (renderer.sync) {
         for (uint32_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
@@ -3382,6 +3199,29 @@ void renderer_terminate()
         }
         free(renderer.framebuffers);
         renderer.framebuffers = NULL;
+    }
+
+    if (renderer.color_image_memory) {
+        vkFreeMemory(renderer.device, renderer.color_image_memory, NULL);
+        renderer.color_image_memory = NULL;
+    }
+
+    if (renderer.color_image) {
+        vkDestroyImage(
+                renderer.device,
+                renderer.color_image,
+                NULL
+                );
+        renderer.color_image = NULL;
+    }
+
+    if (renderer.color_image_view) {
+        vkDestroyImageView(
+                renderer.device,
+                renderer.color_image_view,
+                NULL
+                );
+        renderer.color_image_view = NULL;
     }
 
     if (renderer.depth_image_memory) {
@@ -3624,6 +3464,7 @@ static enum renderer_result create_image(
         uint32_t width,
         uint32_t height,
         uint32_t layers,
+        VkSampleCountFlagBits samples,
         VkFormat format,
         VkImageTiling tiling,
         VkImageUsageFlags usage,
@@ -3644,7 +3485,7 @@ static enum renderer_result create_image(
         .tiling = tiling,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
         .usage = usage,
-        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .samples = samples,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE
     };
 
@@ -3701,28 +3542,38 @@ static enum renderer_result create_image(
     return RENDERER_OKAY;
 }
 
+static enum renderer_result setup_scene()
+{
+    scene_load_soho(&renderer.scene);
+
+    if (renderer.scene.n_objects > renderer.n_objects) {
+        fprintf(
+                stderr,
+                "[renderer] loaded scene has more objects (%zu) than renderer maximum (%zu)\n",
+                renderer.scene.n_objects,
+                renderer.n_objects
+            );
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
+    return RENDERER_OKAY;
+}
+
+static void destroy_scene()
+{
+//    free(renderer.scene.texture_names);
+    free(renderer.scene.objects);
+    renderer.scene = (struct scene) {};
+}
+
 static enum renderer_result setup_texture(
         VkImage * texture_image,
         VkDeviceMemory * texture_image_memory
     )
 {
-    const char * filenames[] = {
-        TEXTURE_BASE_PATH "/soho/512/front-wall-solid.dfield",
-        TEXTURE_BASE_PATH "/soho/512/front-wall-outline.dfield",
-        TEXTURE_BASE_PATH "/soho/512/side-wall-solid.dfield",
-        TEXTURE_BASE_PATH "/soho/512/side-wall-outline.dfield",
-        TEXTURE_BASE_PATH "/soho/512/roof-solid.dfield",
-        TEXTURE_BASE_PATH "/soho/512/roof-outline.dfield",
-        TEXTURE_BASE_PATH "/soho/512/rear-wall-solid.dfield",
-        TEXTURE_BASE_PATH "/soho/512/rear-wall-outline.dfield",
-        TEXTURE_BASE_PATH "/soho/512/rear-wall-interior-solid.dfield",
-        TEXTURE_BASE_PATH "/soho/512/rear-wall-interior-outline.dfield",
-        TEXTURE_BASE_PATH "/soho/512/front-wall-interior-solid.dfield",
-        TEXTURE_BASE_PATH "/soho/512/front-wall-interior-outline.dfield",
-        TEXTURE_BASE_PATH "/soho/512/roof-interior-outline.dfield",
-    };
-
-    size_t n_filenames = sizeof(filenames) / sizeof(*filenames);
+    const char ** filenames = renderer.scene.texture_names;
+    size_t n_filenames = renderer.scene.n_textures;
 
     if (n_filenames > renderer.limits.maxImageArrayLayers) {
         fprintf(
@@ -3802,6 +3653,7 @@ static enum renderer_result setup_texture(
                 width,
                 height,
                 n_filenames,
+                VK_SAMPLE_COUNT_1_BIT,
                 VK_FORMAT_R8_SNORM,
                 VK_IMAGE_TILING_OPTIMAL,
                 VK_IMAGE_USAGE_TRANSFER_DST_BIT |
@@ -4025,8 +3877,7 @@ static enum renderer_result setup_texture_sampler()
             .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
             .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
             .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
-            /* TODO: anisotropy */
-            .anisotropyEnable = VK_TRUE,
+            .anisotropyEnable = renderer.anisotropy ? VK_TRUE : VK_FALSE,
             .maxAnisotropy = renderer.limits.maxSamplerAnisotropy,
             .unnormalizedCoordinates = VK_FALSE,
             .compareEnable = VK_FALSE,
@@ -4197,6 +4048,7 @@ struct atlas * atlas_create(uint32_t element_size, uint32_t elements)
                 elements_wide * element_size,
                 elements_tall * element_size,
                 needed_layers,
+                get_msaa_samples(),
                 VK_FORMAT_R8_SNORM,
                 VK_IMAGE_TILING_OPTIMAL,
                 VK_IMAGE_USAGE_TRANSFER_DST_BIT |

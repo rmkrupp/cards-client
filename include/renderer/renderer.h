@@ -34,6 +34,16 @@ struct renderer_configuration {
     /* what size of dfield to load */
     uint32_t field_size;
 
+    /* how many antialiasing samples?
+     * must be one of 1, 2, 4, 8, 16, 32, or 64 */
+    uint32_t msaa_samples;
+
+    /* whether to enable anisotropic filtering */
+    bool anisotropic_filtering;
+
+    /* whether to enable sample shading */
+    bool sample_shading;
+
     /* texture atlas settings */
     struct atlas_configuration {
         uint32_t max_texture_width;

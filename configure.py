@@ -502,6 +502,7 @@ build('dfield.c', cflags='$cflags -fopenmp', packages=['lzma'])
 w.newline()
 
 build('renderer/renderer.c', packages=['vulkan', 'glfw3'])
+build('renderer/scene.c', packages=['vulkan', 'glfw3'])
 w.newline()
 
 build('util/sorted_set.c')
@@ -581,6 +582,7 @@ bin_target(
         inputs = [
             '$builddir/main.o',
             '$builddir/renderer/renderer.o',
+            '$builddir/renderer/scene.o',
             '$builddir/dfield.o',
             '$builddir/util/sorted_set.o',
             '$builddir/util/strdup.o',

@@ -1,4 +1,4 @@
-/* File: src/main.c
+/* File: include/renderer/scene.h
  * Part of cards-client <github.com/rmkrupp/cards-client>
  *
  * Copyright (C) 2024 Noah Santer <n.ed.santer@gmail.com>
@@ -17,32 +17,36 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+#ifndef RENDERER_SCENE_H
+#define RENDERER_SCENE_H
 
-#include "renderer/renderer.h"
+#include "quat.h"
+#include <stdint.h>
+#include <stddef.h>
 
-#include <stdio.h>
+struct object {
+    struct quaternion rotation;
+    float cx, cy, cz;
+    float x, y, z;
+    float scale;
+    uint32_t solid_index,
+             outline_index;
+};
 
-int main(int argc, char ** argv)
-{
-    (void)argc;
-    (void)argv;
+struct scene {
+    size_t n_textures;
+    const char ** texture_names;
+    size_t n_objects;
+    struct object * objects;
+    void (*step)(struct scene * scene);
 
-    enum renderer_result result =
-        renderer_init(
-                &(struct renderer_configuration) {
-                    .max_frames_in_flight = 2,
-                    .anisotropic_filtering = true,
-                    .sample_shading = true,
-                    .msaa_samples = 64
-                }
-            );
-    
-    if (result) {
-        return 1;
-    }
+    struct camera {
+        struct quaternion rotation;
+        float x, y, z;
+    } camera;
 
-    renderer_loop();
+};
 
-    renderer_terminate();
-    return 0;
-}
+void scene_load_soho(struct scene * scene);
+
+#endif /* RENDERER_SCENE_H */
