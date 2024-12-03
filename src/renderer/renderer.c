@@ -1502,7 +1502,8 @@ static enum renderer_result setup_pipeline()
                         .layout =
                             VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
                     }
-                }
+                },
+                .preserveAttachmentCount = 0
             }
         },
         .dependencyCount = 1,
@@ -2286,6 +2287,7 @@ static enum renderer_result setup_descriptor_sets()
                 .dstArrayElement = 0,
                 .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                 .descriptorCount = 1,
+                .pBufferInfo = NULL,
                 .pImageInfo = &(VkDescriptorImageInfo) {
                     .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     .imageView = renderer.texture_view,
