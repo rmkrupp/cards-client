@@ -21,6 +21,7 @@
 #define RENDERER_RENDERER_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 /* the result of initializing the renderer */
 enum renderer_result {
