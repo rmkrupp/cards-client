@@ -193,7 +193,7 @@ struct renderer {
     } push_constants;
 
 } renderer = {
-    .n_objects = 64
+    .n_objects = 16 * 1048
 };
 
 struct atlas {
@@ -242,6 +242,7 @@ struct uniform_buffer_object {
     uint32_t solid_index,
              outline_index,
              glow_index;
+    uint32_t flags;
 };
 
 /*****************************************************************************
@@ -2664,6 +2665,8 @@ static enum renderer_result update_uniform_buffer(uint32_t image_index)
         ubo.solid_index = renderer.scene.objects[i].solid_index;
         ubo.outline_index = renderer.scene.objects[i].outline_index;
         ubo.glow_index = renderer.scene.objects[i].glow_index;
+        ubo.flags = 0;
+        ubo.flags |= renderer.scene.objects[i].enabled ? 1 : 0;
 
         memcpy(
                 renderer.uniform_buffers_mapped[image_index] +

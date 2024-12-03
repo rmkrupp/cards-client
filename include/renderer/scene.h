@@ -25,6 +25,7 @@
 #include <stddef.h>
 
 struct object {
+    bool enabled;
     struct quaternion rotation;
     float cx, cy, cz;
     float x, y, z;

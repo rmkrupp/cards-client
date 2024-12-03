@@ -30,6 +30,14 @@
 #define TEXTURE_RES "512"
 #endif /* TEXTURE_RES */
 
+constexpr size_t n_raindrops = 10000;
+size_t rain_start, rain_stop;
+struct raindrop {
+    bool alive;
+    float x, y, z;
+    float velocity;
+} raindrops[n_raindrops] = {};
+
 void soho_step(struct scene * scene)
 {
     static size_t tick, camera_tick;
@@ -69,6 +77,43 @@ void soho_step(struct scene * scene)
         }
 
         camera_tick++;
+    }
+
+    for (size_t i = rain_start; i < rain_stop; i++) {
+        struct raindrop * drop = &raindrops[i - rain_start];
+        if (drop->alive) {
+            drop->velocity += 0.0005;
+            drop->y -= drop->velocity;
+            drop->x -= drop->velocity / 5.0;
+            if (drop->y < -0.5) {
+                drop->alive = false;
+                scene->objects[i].enabled = false;
+                continue;
+            }
+            scene->objects[i].x = drop->x;
+            scene->objects[i].y = drop->y;
+            scene->objects[i].z = drop->z;
+        } else {
+            if (rand() % 100 < 1) {
+                drop->alive = true;
+                drop->x = (float)((double)(rand() % 1000000) / 100000.0 - 5.0);
+                drop->z = (float)((double)(rand() % 1000000) / 100000.0 - 5.0);
+                drop->y = (float)((double)(rand() % 1000000) / 100000.0 + 2.0);
+                //drop->y = 2.0;
+                drop->velocity = 0.0;
+                quaternion_from_axis_angle(
+                        &scene->objects[i].rotation, 0.0, 1.0, 0.0, (float)(rand() % 200) / 100.0 * M_PI);
+                scene->objects[i].x = drop->x;
+                scene->objects[i].y = drop->y;
+                scene->objects[i].z = drop->z;
+                scene->objects[i].enabled = true;
+                scene->objects[i].scale = 0.1;
+                scene->objects[i].solid_index = 19;
+                scene->objects[i].outline_index = 19;
+            } else {
+                scene->objects[i].enabled = false;
+            }
+        }
     }
 
     tick++;
@@ -116,6 +161,7 @@ void scene_load_soho(struct scene * scene)
         TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/lamp-outline.dfield",
         TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/lamp-glow.dfield",
         TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/fence-outline.dfield",
+        TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/rain-outline.dfield",
     };
     size_t n_filenames = sizeof(filenames) / sizeof(*filenames);
 
@@ -123,11 +169,12 @@ void scene_load_soho(struct scene * scene)
     scene->n_textures = n_filenames;
     scene->step = &soho_step;
 
-    scene->n_objects = 28;
-    scene->objects = malloc(sizeof(*scene->objects) * scene->n_objects);
+    scene->n_objects = 28 + n_raindrops;
+    scene->objects = calloc(scene->n_objects, sizeof(*scene->objects));
 
     /* object 0: the front wall */
     scene->objects[0] = (struct object) {
+        .enabled = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -142,6 +189,7 @@ void scene_load_soho(struct scene * scene)
 
     /* object 1 and 2: the side walls */
     scene->objects[1] = (struct object) {
+        .enabled = true,
         .cx = -0.25,
         .cy = 0.0,
         .cz = 0.0,
@@ -153,6 +201,7 @@ void scene_load_soho(struct scene * scene)
         .outline_index = 3
     };
     scene->objects[2] = (struct object) {
+        .enabled = true,
         .cx = -0.25,
         .cy = 0.0,
         .cz = 0.0,
@@ -170,6 +219,7 @@ void scene_load_soho(struct scene * scene)
 
     /* object 3 and 4: the roof */
     scene->objects[3] = (struct object) {
+        .enabled = true,
         .cx = -0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -181,6 +231,7 @@ void scene_load_soho(struct scene * scene)
         .outline_index = 5
     };
     scene->objects[4] = (struct object) {
+        .enabled = true,
         .cx = -0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -194,6 +245,7 @@ void scene_load_soho(struct scene * scene)
 
     /* object 5 and 6: the inside of the roof */
     scene->objects[5] = (struct object) {
+        .enabled = true,
         .cx = -0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -205,6 +257,7 @@ void scene_load_soho(struct scene * scene)
         .outline_index = 12
     };
     scene->objects[6] = (struct object) {
+        .enabled = true,
         .cx = -0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -238,6 +291,7 @@ void scene_load_soho(struct scene * scene)
 
     /* object 7 and 8: the rear wall */
     scene->objects[7] = (struct object) {
+        .enabled = true,
         .cx = -0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -249,6 +303,7 @@ void scene_load_soho(struct scene * scene)
         .outline_index = 7
     };
     scene->objects[8] = (struct object) {
+        .enabled = true,
         .cx = -0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -268,6 +323,7 @@ void scene_load_soho(struct scene * scene)
 
     /* object 9 and 10: the side wall interiors */
     scene->objects[9] = (struct object) {
+        .enabled = true,
         .cx = -0.25,
         .cy = 0.0,
         .cz = 0.0,
@@ -279,6 +335,7 @@ void scene_load_soho(struct scene * scene)
         .outline_index = 3
     };
     scene->objects[10] = (struct object) {
+        .enabled = true,
         .cx = -0.25,
         .cy = 0.0,
         .cz = 0.0,
@@ -300,6 +357,7 @@ void scene_load_soho(struct scene * scene)
 
     /* object 11: the front interior wall */
     scene->objects[11] = (struct object) {
+        .enabled = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -317,6 +375,7 @@ void scene_load_soho(struct scene * scene)
 
 /* object 12: the road */
     scene->objects[12] = (struct object) {
+        .enabled = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -337,6 +396,7 @@ void scene_load_soho(struct scene * scene)
             &scene->objects[12].rotation, &scene->objects[12].rotation, &q_tmp_2);
 
     scene->objects[13] = (struct object) {
+        .enabled = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -354,6 +414,7 @@ void scene_load_soho(struct scene * scene)
             &scene->objects[13].rotation, &scene->objects[13].rotation, &q_tmp_2);
 
     scene->objects[14] = (struct object) {
+        .enabled = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -369,6 +430,7 @@ void scene_load_soho(struct scene * scene)
     quaternion_identity(&scene->objects[14].rotation);
 
     scene->objects[15] = (struct object) {
+        .enabled = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -386,6 +448,7 @@ void scene_load_soho(struct scene * scene)
             &scene->objects[15].rotation, &scene->objects[15].rotation, &q_tmp);
 
     scene->objects[16] = (struct object) {
+        .enabled = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -401,6 +464,7 @@ void scene_load_soho(struct scene * scene)
     quaternion_identity(&scene->objects[16].rotation);
 
     scene->objects[17] = (struct object) {
+        .enabled = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -419,6 +483,7 @@ void scene_load_soho(struct scene * scene)
 
 
     scene->objects[18] = (struct object) {
+        .enabled = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -434,6 +499,7 @@ void scene_load_soho(struct scene * scene)
     quaternion_identity(&scene->objects[18].rotation);
 
     scene->objects[19] = (struct object) {
+        .enabled = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -451,6 +517,7 @@ void scene_load_soho(struct scene * scene)
             &scene->objects[19].rotation, &scene->objects[19].rotation, &q_tmp);
 
     scene->objects[20] = (struct object) {
+        .enabled = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -465,6 +532,7 @@ void scene_load_soho(struct scene * scene)
     quaternion_identity(&scene->objects[20].rotation);
 
     scene->objects[21] = (struct object) {
+        .enabled = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -481,6 +549,7 @@ void scene_load_soho(struct scene * scene)
             &scene->objects[21].rotation, &scene->objects[21].rotation, &q_tmp);
 
     scene->objects[22] = (struct object) {
+        .enabled = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -495,6 +564,7 @@ void scene_load_soho(struct scene * scene)
     quaternion_identity(&scene->objects[22].rotation);
 
     scene->objects[23] = (struct object) {
+        .enabled = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -511,6 +581,7 @@ void scene_load_soho(struct scene * scene)
             &scene->objects[23].rotation, &scene->objects[23].rotation, &q_tmp);
 
     scene->objects[24] = (struct object) {
+        .enabled = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -525,6 +596,7 @@ void scene_load_soho(struct scene * scene)
     quaternion_identity(&scene->objects[24].rotation);
 
     scene->objects[25] = (struct object) {
+        .enabled = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -541,6 +613,7 @@ void scene_load_soho(struct scene * scene)
             &scene->objects[25].rotation, &scene->objects[25].rotation, &q_tmp);
 
     scene->objects[26] = (struct object) {
+        .enabled = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -555,6 +628,7 @@ void scene_load_soho(struct scene * scene)
     quaternion_identity(&scene->objects[26].rotation);
 
     scene->objects[27] = (struct object) {
+        .enabled = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -570,6 +644,8 @@ void scene_load_soho(struct scene * scene)
     quaternion_multiply(
             &scene->objects[27].rotation, &scene->objects[27].rotation, &q_tmp);
 
+    rain_start = 28;
+    rain_stop = 28 + n_raindrops;
 
     /* setup the camera */
     scene->camera = (struct camera) {
@@ -643,6 +719,7 @@ void scene_load_soho(struct scene * scene)
             },
             360
         );
+
 }
 
 void scene_destroy(struct scene * scene)

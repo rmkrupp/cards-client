@@ -4,21 +4,20 @@
 
 Basic rendering stuff
 
- - [ ] clamping feature
  - [x] textures, samplers
- - [ ] depth buffering
+ - [x] depth buffering
  - [ ] mipmaps
- - [ ] multisampling
- - [ ] push constants
+ - [x] multisampling
+ - [x] push constants
  - [ ] extra debug messages
  - [x] signed distance maps
 
 Abstractions
 
  - [ ] models, model sets
- - [ ] camera
+ - [x] camera
  - [ ] time
- - [ ] scheduled movements and interpolations etc.
+ - [x] scheduled movements and interpolations etc.
 
 More advanced stuff
 
@@ -32,28 +31,28 @@ Misc
 
 Packaging and w64 stuff
 
- - [ ] set up standalone builds
- - [ ] test w64 builds
+ - [x] set up standalone builds
+ - [x] test w64 builds
 
 ## Tech Demo
 
- - [ ] multiple objects
- - [ ] scenes
-   - [ ] scene scripts
-   - [ ] timelines
+ - [x] multiple objects
+ - [x] scenes
+   - [x] scene scripts
+   - [x] timelines
    - [ ] API
    - [ ] animations / loops
    - [ ] transitions
- - [ ] cameras
-   - [ ] queued movements
+ - [x] cameras
+   - [x] queued movements
  - [ ] rain effects
  - [ ] glow
  - [ ] OIT
  - [ ] ambient lighting
  - [ ] point lighting
  - [ ] shadow casting
- - [ ] reflections
- - [ ] stick figure / connected object
+ - [ ] reflections / glass
+ - [ ] stick figure / connected object / floating head
  - [ ] text
    - [ ] timed, placed, moving text
  - [ ] audio
