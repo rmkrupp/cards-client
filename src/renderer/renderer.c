@@ -183,7 +183,7 @@ struct renderer {
     } push_constants;
 
 } renderer = {
-    .n_objects = 2000
+    .n_objects = 16
 };
 
 struct atlas {
@@ -211,15 +211,16 @@ struct atlas {
 struct vertex {
     struct vec3 position;
     struct vec3 color;
+    struct vec3 normal;
     struct vec2 texture_coordinates;
 };
 
 constexpr float z = 0.0f;
 struct vertex vertices[] = {
-    { { -0.5f, -0.5f, z }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f } },
-    { { 0.5f, -0.5f, z }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 1.0f } },
-    { { 0.5f, 0.5f, z }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f } },
-    { { -0.5f, 0.5f, z }, { 1.0f, 0.0f, 1.0f }, { 0.0f, 0.0f } }
+    { { -0.5f, -0.5f, z }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f } },
+    { { 0.5f, -0.5f, z }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } },
+    { { 0.5f, 0.5f, z }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f } },
+    { { -0.5f, 0.5f, z }, { 1.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f } }
 };
 
 uint16_t indices[] = {
@@ -1120,7 +1121,9 @@ static enum renderer_result setup_logical_device()
         .pQueueCreateInfos = queue_create_info,
         .queueCreateInfoCount =
             sizeof(queue_create_info) / sizeof(*queue_create_info),
-        .pEnabledFeatures = &(VkPhysicalDeviceFeatures){ },
+        .pEnabledFeatures = &(VkPhysicalDeviceFeatures){
+            .samplerAnisotropy = VK_TRUE
+        },
         .enabledExtensionCount = sizeof(extensions) / sizeof(*extensions),
         .ppEnabledExtensionNames = extensions,
         .enabledLayerCount = renderer.n_layers,
@@ -1298,7 +1301,9 @@ static enum renderer_result setup_descriptor_set_layout()
             {
                 .binding = 0,
                 .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                .descriptorCount = renderer.n_objects,
+                /* FIX */
+                //.descriptorCount = renderer.n_objects,
+                .descriptorCount = 1,
                 .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
                 .pImmutableSamplers = NULL
             },
@@ -1564,7 +1569,7 @@ static enum renderer_result setup_pipeline()
                     .inputRate = VK_VERTEX_INPUT_RATE_VERTEX
                 }
             },
-            .vertexAttributeDescriptionCount = 3,
+            .vertexAttributeDescriptionCount = 4,
             .pVertexAttributeDescriptions =
                 (VkVertexInputAttributeDescription[]) {
                 {
@@ -1582,6 +1587,12 @@ static enum renderer_result setup_pipeline()
                 {
                     .binding = 0,
                     .location = 2,
+                    .format = VK_FORMAT_R32G32B32_SFLOAT,
+                    .offset = offsetof(struct vertex, normal)
+                },
+                {
+                    .binding = 0,
+                    .location = 3,
                     .format = VK_FORMAT_R32G32_SFLOAT,
                     .offset = offsetof(struct vertex, texture_coordinates)
                 }
@@ -1622,9 +1633,9 @@ static enum renderer_result setup_pipeline()
             .rasterizerDiscardEnable = VK_FALSE,
             .polygonMode = VK_POLYGON_MODE_FILL,
             .lineWidth = 1.0f,
-//            .cullMode = VK_CULL_MODE_BACK_BIT,
-            .cullMode = 0,
-            .frontFace = VK_FRONT_FACE_CLOCKWISE,
+            .cullMode = VK_CULL_MODE_BACK_BIT,
+//            .cullMode = 0,
+            .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
             .depthBiasEnable = VK_FALSE
         },
         .pMultisampleState = &(VkPipelineMultisampleStateCreateInfo) {
@@ -1927,14 +1938,15 @@ static enum renderer_result setup_uniform_buffers()
     /* TODO: adjust this in case other resources besides the image sampler
      *       are used
      */
-    if (renderer.n_objects + 1 > renderer.limits.maxPerStageResources) {
+    uint32_t limit = renderer.limits.maxPerStageResources;
+    if (renderer.n_objects + 1 > limit) {
         fprintf(
                 stderr,
                 "[renderer] (INFO) limiting object maximum from %zu to device limit %u\n",
                 renderer.n_objects,
-                renderer.limits.maxPerStageResources - 1
+                limit - 1
             );
-        renderer.n_objects = renderer.limits.maxPerStageResources - 1;
+        renderer.n_objects = limit - 1;
     }
 
     if (renderer.n_objects > renderer.limits.maxPerStageDescriptorUniformBuffers) {
@@ -1947,23 +1959,31 @@ static enum renderer_result setup_uniform_buffers()
         renderer.n_objects = renderer.limits.maxPerStageDescriptorUniformBuffers;
     }
 
-    if (renderer.n_objects > renderer.limits.maxDescriptorSetUniformBuffers) {
+    limit = renderer.limits.maxDescriptorSetUniformBuffers;
+    if (renderer.n_objects > limit) {
         fprintf(
                 stderr,
                 "[renderer] (INFO) limiting object maximum from %zu to device limit %u\n",
                 renderer.n_objects,
-                renderer.limits.maxDescriptorSetUniformBuffers
+                limit
             );
-        renderer.n_objects = renderer.limits.maxDescriptorSetUniformBuffers;
+        renderer.n_objects = limit;
     }
 
-    uint32_t multiple = renderer.limits.minUniformBufferOffsetAlignment;
+    //uint32_t multiple = renderer.limits.minUniformBufferOffsetAlignment;
+    uint32_t multiple = 16;
     uint32_t base_size = sizeof(struct uniform_buffer_object);
     if (base_size % multiple != 0) {
         renderer.ubo_size = base_size + (multiple - base_size % multiple);
     } else {
         renderer.ubo_size = base_size;
     }
+    fprintf(
+            stderr,
+            "[renderer] (INFO) sizeof(ubo) = %zu, ubo_size = %zu\n",
+            sizeof(struct uniform_buffer_object),
+            renderer.ubo_size
+        );
 
     fprintf(
             stderr,
@@ -2189,7 +2209,7 @@ static enum renderer_result setup_descriptor_pool()
 static enum renderer_result setup_descriptor_sets()
 {
     VkDescriptorSetLayout * layouts = malloc(
-            renderer.config.max_frames_in_flight *sizeof(*layouts) * renderer.n_objects);
+            renderer.config.max_frames_in_flight *sizeof(*layouts));
     for (uint32_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
         layouts[i] = renderer.descriptor_set_layout;
     }
@@ -2222,6 +2242,7 @@ static enum renderer_result setup_descriptor_sets()
     free(layouts);
 
     for (uint32_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
+        /*
         VkDescriptorBufferInfo * buffer_infos = malloc(
                 sizeof(*buffer_infos) * renderer.n_objects);
         for (size_t j = 0; j < renderer.n_objects; j++) {
@@ -2231,6 +2252,12 @@ static enum renderer_result setup_descriptor_sets()
                .range = sizeof(struct uniform_buffer_object)
            }; 
         }
+        */
+        VkDescriptorBufferInfo buffer_info = {
+            .buffer = renderer.uniform_buffers[i],
+            .offset = 0,
+            .range = renderer.ubo_size * renderer.n_objects
+        };
 
         VkWriteDescriptorSet descriptor_writes[] = {
             {
@@ -2239,8 +2266,12 @@ static enum renderer_result setup_descriptor_sets()
                 .dstBinding = 0,
                 .dstArrayElement = 0,
                 .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                .descriptorCount = renderer.n_objects,
-                .pBufferInfo = buffer_infos,
+                // FIX
+                //.descriptorCount = renderer.n_objects,
+                .descriptorCount = 1,
+                // FIX
+                //.pBufferInfo = buffer_infos,
+                .pBufferInfo = &buffer_info,
                 .pImageInfo = NULL,
                 .pTexelBufferView = NULL
             },
@@ -2262,7 +2293,8 @@ static enum renderer_result setup_descriptor_sets()
         vkUpdateDescriptorSets(
                 renderer.device, 2, descriptor_writes, 0, NULL);
 
-        free(buffer_infos);
+        // FIX
+        //free(buffer_infos);
     }
 
     return RENDERER_OKAY;
@@ -2473,18 +2505,312 @@ static enum renderer_result record_command_buffer(
     return RENDERER_OKAY;
 }
 
-uint32_t tick = 0;
-
 struct object {
     struct quaternion rotation;
+    float cx, cy, cz;
     float x, y, z;
     float scale;
+    uint32_t solid_index,
+             outline_index;
 } * object;
 
 /* TODO: investigate push constants */
 static enum renderer_result update_uniform_buffer(uint32_t image_index)
 {
+    /* first time setup */
+    constexpr size_t object_max = 12;
+    static struct quaternion q_view, q_view_adj;
+    static size_t tick;
+    if (tick == 0) {
+        quaternion_identity(&q_view);
+        //quaternion_from_axis_angle(&q_view, 0.0, 1.0, 0.0, -M_PI / 2 * 0.95);
+        quaternion_from_axis_angle(&q_view_adj, 0.0, 1.0, 0.0, M_PI / 1000);
+        object = malloc(sizeof(*object) * object_max);
+    }
 
+    /* push constants */
+    struct matrix view_matrix_a, view_matrix_b, view_matrix_c;
+    //quaternion_multiply(&q_view, &q_view, &q_view_adj);
+    //matrix_translation(&view_matrix_b, 0 - ((float)(tick % 1000)) / 100.0, 0, 5 - ((float)(tick % 1000)) / 200.0);
+    //matrix_translation(&view_matrix_b, 2, 0, 0.1);
+    matrix_translation(&view_matrix_b, 0, 0, 2);
+    float r = 1.0;
+    float z = r * cos((float)tick / 100.0);
+    float x = r * sin((float)tick / 100.0);
+    //float x = -0.5;
+    matrix_translation(&view_matrix_b, x, 0.25, z);
+    quaternion_from_axis_angle(&q_view, 0.0, -1.0, 0.0, atan2(x, z));
+    quaternion_normalize(&q_view, &q_view);
+    quaternion_matrix(&view_matrix_a, &q_view);
+
+    matrix_multiply(&view_matrix_c, &view_matrix_a, &view_matrix_b);
+
+    renderer.push_constants.view = view_matrix_c;
+    matrix_perspective(
+            &renderer.push_constants.projection,
+            -0.1f,
+            -1000.0f,
+            3.14159 / 4,
+            renderer.chain_details.extent.width /
+            (float)renderer.chain_details.extent.height
+        );
+
+
+    if (tick == 0) {
+    /* object 0: the front wall */
+    object[0] = (struct object) {
+        .rotation = object[0].rotation,
+        .cx = 0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = 0.0,
+        .y = 0.0,
+        .z = 0.0,
+        .scale = 1.0,
+        .solid_index = 0,
+        .outline_index = 1
+    };
+    if (tick == 0) {
+        quaternion_identity(&object[0].rotation);
+        //quaternion_from_axis_angle(&object[0].rotation, 0.0, 1.0, 0.0, M_PI);
+    }
+    /*
+    struct quaternion tmp;
+    quaternion_from_axis_angle(
+            &tmp, 0.0, 1.0, 0.0, M_PI / 100.0);
+    quaternion_multiply(&object[0].rotation, &object[0].rotation, &tmp);
+    */
+
+    /* object 1 and 2: the side walls */
+    object[1] = (struct object) {
+        .cx = -0.25,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = 0.5,
+        .y = 0.0,
+        .z = 0.25,
+        .scale = 1.0,
+        .solid_index = 2,
+        .outline_index = 3
+    };
+    object[2] = (struct object) {
+        .cx = -0.25,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = -0.5,
+        .y = 0.0,
+        .z = 0.25,
+        .scale = 1.0,
+        .solid_index = 2,
+        .outline_index = 3
+    };
+    quaternion_from_axis_angle(
+            &object[1].rotation, 0.0, 1.0, 0.0, -M_PI / 2.0);
+    quaternion_from_axis_angle(
+            &object[2].rotation, 0.0, 1.0, 0.0, M_PI / 2.0);
+
+    /* object 3 and 4: the roof */
+    object[3] = (struct object) {
+        .cx = -0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = 0.0,
+        .y = 0.252,
+        .z = 0.25,
+        .scale = 1.05,
+        .solid_index = 4,
+        .outline_index = 5
+    };
+    object[4] = (struct object) {
+        .cx = -0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = -0.0,
+        .y = 0.252,
+        .z = 0.25,
+        .scale = 1.05,
+        .solid_index = 4,
+        .outline_index = 5
+    };
+
+    /* object 5 and 6: the inside of the roof */
+    object[5] = (struct object) {
+        .cx = -0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = 0.0,
+        .y = 0.252,
+        .z = 0.25,
+        .scale = 1.05,
+        .solid_index = 4,
+        .outline_index = 5
+    };
+    object[6] = (struct object) {
+        .cx = -0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = -0.0,
+        .y = 0.252,
+        .z = 0.25,
+        .scale = 1.05,
+        .solid_index = 4,
+        .outline_index = 5
+    };
+    
+    struct quaternion q_tmp;
+    quaternion_from_axis_angle(
+            &q_tmp, 0.0, 1.0, 0.0, M_PI);
+
+    quaternion_from_axis_angle(
+            &object[3].rotation, 1.0, 0.0, 0.0, M_PI / 4.0);
+
+    quaternion_from_axis_angle(
+            &object[4].rotation, 1.0, 0.0, 0.0, -M_PI / 4.0);
+    quaternion_multiply(
+            &object[4].rotation, &object[4].rotation, &q_tmp);
+
+    quaternion_from_axis_angle(
+            &object[5].rotation, 1.0, 0.0, 0.0, M_PI / 4.0);
+    quaternion_multiply(
+            &object[5].rotation, &object[5].rotation, &q_tmp);
+
+    quaternion_from_axis_angle(
+            &object[6].rotation, 1.0, 0.0, 0.0, -M_PI / 4.0);
+//    quaternion_multiply(
+//            &object[6].rotation, &object[6].rotation, &q_tmp);
+
+    /* object 7 and 8: the rear wall */
+    object[7] = (struct object) {
+        .cx = -0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = 0.0,
+        .y = 0.0,
+        .z = 0.5,
+        .scale = 1.0,
+        .solid_index = 6,
+        .outline_index = 7
+    };
+    object[8] = (struct object) {
+        .cx = -0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = 0.0,
+        .y = 0.0,
+        .z = 0.5,
+        .scale = 1.0,
+        .solid_index = 8,
+        .outline_index = 9
+    };
+
+    quaternion_identity(&object[7].rotation);
+    quaternion_multiply(
+            &object[7].rotation, &object[7].rotation, &q_tmp);
+
+    quaternion_identity(&object[8].rotation);
+
+    /* object 9 and 10: the side wall interiors */
+    object[9] = (struct object) {
+        .cx = -0.25,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = 0.5,
+        .y = 0.0,
+        .z = 0.25,
+        .scale = 1.0,
+        .solid_index = 2,
+        .outline_index = 3
+    };
+    object[10] = (struct object) {
+        .cx = -0.25,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = -0.5,
+        .y = 0.0,
+        .z = 0.25,
+        .scale = 1.0,
+        .solid_index = 2,
+        .outline_index = 3
+    };
+    quaternion_from_axis_angle(
+            &object[9].rotation, 0.0, 1.0, 0.0, -M_PI / 2.0);
+    quaternion_multiply(
+            &object[9].rotation, &object[9].rotation, &q_tmp);
+    quaternion_from_axis_angle(
+            &object[10].rotation, 0.0, 1.0, 0.0, M_PI / 2.0);
+    quaternion_multiply(
+            &object[10].rotation, &object[10].rotation, &q_tmp);
+
+    /* object 11: the front interior wall */
+    object[11] = (struct object) {
+        .rotation = object[0].rotation,
+        .cx = 0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = 0.0,
+        .y = 0.0,
+        .z = 0.0,
+        .scale = 1.0,
+        .solid_index = 10,
+        .outline_index = 11
+    };
+
+    quaternion_identity(&object[11].rotation);
+    quaternion_multiply(
+            &object[11].rotation, &object[11].rotation, &q_tmp);
+
+
+    }
+    
+    for (size_t i = 0; i < object_max; i++) {
+        struct matrix matrix_translate;
+        struct matrix matrix_rotate;
+        struct uniform_buffer_object ubo;
+
+        struct quaternion rotate_everything;
+        quaternion_from_axis_angle(&rotate_everything, 0.0, 1.0, 0.0, 0.001);
+        //quaternion_multiply(&object[i].rotation, &object[i].rotation, &rotate_everything);
+        quaternion_normalize(&object[i].rotation, &object[i].rotation);
+
+        matrix_translation_scale(
+                &ubo.model,
+                object[i].x,
+                object[i].y,
+                object[i].z,
+                object[i].scale,
+                object[i].scale,
+                object[i].scale
+            );
+
+        matrix_translation(
+                &matrix_translate,
+                object[i].cx,
+                object[i].cy,
+                object[i].cz
+            );
+
+        quaternion_matrix(
+                &matrix_rotate,
+                &object[i].rotation
+            );
+
+        matrix_multiply(&ubo.model, &ubo.model, &matrix_rotate);
+        matrix_multiply(&ubo.model, &ubo.model, &matrix_translate);
+        ubo.solid_index = object[i].solid_index;
+        ubo.outline_index = object[i].outline_index;
+
+        memcpy(
+                renderer.uniform_buffers_mapped[image_index] + renderer.ubo_size * i,
+//                renderer.uniform_buffers_mapped[image_index] + sizeof(struct uniform_buffer_object) * i,
+                &ubo,
+                sizeof(ubo)
+            );
+    }
+    
+    tick++;
+    return RENDERER_OKAY;
+
+    /*
     static struct quaternion q_view;
     static float s;
     if (tick == 0) {
@@ -2563,6 +2889,7 @@ static enum renderer_result update_uniform_buffer(uint32_t image_index)
     tick++;
 
     return RENDERER_OKAY;
+    */
 }
 /* draw a frame */
 static enum renderer_result renderer_draw_frame()
@@ -3389,9 +3716,18 @@ static enum renderer_result setup_texture(
     )
 {
     const char * filenames[] = {
-        "out/data/512/snrk2-solid.dfield",
-        "out/data/512/snrk2-outline.dfield",
-        "out/data/512/gronk.dfield"
+        "out/data/soho/512/front-wall-solid.dfield",
+        "out/data/soho/512/front-wall-outline.dfield",
+        "out/data/soho/512/side-wall-solid.dfield",
+        "out/data/soho/512/side-wall-outline.dfield",
+        "out/data/soho/512/roof-solid.dfield",
+        "out/data/soho/512/roof-outline.dfield",
+        "out/data/soho/512/rear-wall-solid.dfield",
+        "out/data/soho/512/rear-wall-outline.dfield",
+        "out/data/soho/512/rear-wall-interior-solid.dfield",
+        "out/data/soho/512/rear-wall-interior-outline.dfield",
+        "out/data/soho/512/front-wall-interior-solid.dfield",
+        "out/data/soho/512/front-wall-interior-outline.dfield",
     };
 
     size_t n_filenames = sizeof(filenames) / sizeof(*filenames);
@@ -3698,7 +4034,7 @@ static enum renderer_result setup_texture_sampler()
             .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
             .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
             /* TODO: anisotropy */
-            .anisotropyEnable = VK_FALSE,
+            .anisotropyEnable = VK_TRUE,
             .maxAnisotropy = renderer.limits.maxSamplerAnisotropy,
             .unnormalizedCoordinates = VK_FALSE,
             .compareEnable = VK_FALSE,

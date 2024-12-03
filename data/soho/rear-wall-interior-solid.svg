@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="2048"
+   height="2048"
+   viewBox="0 0 541.86665 541.86666"
+   version="1.1"
+   id="svg1"
+   inkscape:version="1.4 (e7c3feb100, 2024-10-09)"
+   sodipodi:docname="rear-wall-interior-solid.svg"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:document-units="mm"
+     inkscape:zoom="0.4641354"
+     inkscape:cx="1152.6809"
+     inkscape:cy="1398.2989"
+     inkscape:window-width="1920"
+     inkscape:window-height="1011"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="layer1"
+     showgrid="false" />
+  <defs
+     id="defs1" />
+  <g
+     inkscape:label="Layer 1"
+     inkscape:groupmode="layer"
+     id="layer1">
+    <path
+       id="rect2"
+       style="fill:#000000;fill-opacity:1;stroke:#000000;stroke-width:7"
+       d="M 538.31677,538.31674 V 274.48325 H 3.5499208 v 263.83349 z"
+       sodipodi:nodetypes="ccccc" />
+    <ellipse
+       style="fill:#ffffff;fill-opacity:1;stroke:#000000;stroke-width:7;stroke-dasharray:none"
+       id="path1"
+       cx="-216.57246"
+       cy="350.67673"
+       rx="31.215347"
+       ry="31.989277"
+       transform="scale(-1,1)" />
+    <ellipse
+       style="fill:#ffffff;fill-opacity:1;stroke:#000000;stroke-width:7;stroke-dasharray:none"
+       id="path1-5"
+       cx="-118.57275"
+       cy="350.67673"
+       rx="31.215347"
+       ry="31.989277"
+       transform="scale(-1,1)" />
+    <rect
+       style="fill:none;stroke:#000000;stroke-width:3.4189;stroke-dasharray:none"
+       id="rect1"
+       width="22.332703"
+       height="15.417228"
+       x="-368.81403"
+       y="453.85757"
+       transform="scale(-1,1)" />
+    <ellipse
+       style="fill:none;stroke:#000000;stroke-width:1.94222;stroke-dasharray:none"
+       id="path3"
+       cx="-362.20905"
+       cy="459.96112"
+       rx="0.73811841"
+       ry="1.3839723"
+       transform="scale(-1,1)" />
+    <ellipse
+       style="fill:none;stroke:#000000;stroke-width:1.94222;stroke-dasharray:none"
+       id="path3-2"
+       cx="-356.15222"
+       cy="459.96112"
+       rx="0.73811841"
+       ry="1.3839723"
+       transform="scale(-1,1)" />
+    <path
+       style="fill:none;stroke:#000000;stroke-width:3;stroke-dasharray:none"
+       d="m 357.64767,469.27481 c 0,0 0,22.54013 0,29.09694 0,6.55681 -17.2998,-0.56616 -17.2959,5.84308 0.004,6.40923 0,30.64053 0,30.64053"
+       id="path4"
+       sodipodi:nodetypes="czzc" />
+  </g>
+</svg>

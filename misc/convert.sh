@@ -30,7 +30,7 @@ fi
 
 in=4098
 out="$2"
-spread="16"
+spread="128"
 dir="$(mktemp -d)"
 mkdir -p "$dir/$(dirname $1)"
 outdir="out/$(dirname "$1")/$2"
