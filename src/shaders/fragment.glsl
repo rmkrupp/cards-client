@@ -2,7 +2,7 @@
 layout(location = 0) in vec3 fragColor;
 layout(location = 1) in vec3 fragNormal;
 layout(location = 2) in vec2 fragTexCoord;
-layout(location = 3) in flat ivec2 texture_indices;
+layout(location = 3) in flat ivec3 texture_indices;
 
 layout(binding = 1) uniform sampler2DArray texSampler;
 //layout(binding = 2) uniform sampler2D texSamplerSolid;
@@ -12,6 +12,9 @@ layout(location = 0) out vec4 out_color;
 void main() {
     float t_solid = texture(texSampler, vec3(fragTexCoord, texture_indices.x)).x;
     float t_outline = texture(texSampler, vec3(fragTexCoord, texture_indices.y)).x;
+    float t_glow = texture(texSampler, vec3(fragTexCoord, texture_indices.z)).x;
+
+    bool glows = texture_indices.z > 0;
 
     float dcenter = distance(fragTexCoord, vec2(0.5, 0.5));
     float dcorner00 = distance(fragTexCoord, vec2(0.0, 0.0));
@@ -37,10 +40,12 @@ void main() {
 
     if (t_solid > 0.5 * 16 / 128) {
         discard;
-    } else if (t_outline >= outline_cutoff) {
-        out_color = vec4(1.0, 1.0, 1.0, 1.0);
-    } else {
+    } else if (t_outline <= outline_cutoff) {
         out_color = vec4(0.0, 0.0, 0.0, 1.0);
+    } else if (glows && t_glow <= outline_cutoff) {
+        out_color = vec4(1.0, 0.647, 0.0, 1.0);
+    } else {
+        out_color = vec4(1.0, 1.0, 1.0, 1.0);
     }
     /*
     if (mind > threshold && t_solid > (0.5 * 16 / 128)) {

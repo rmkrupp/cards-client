@@ -193,7 +193,7 @@ struct renderer {
     } push_constants;
 
 } renderer = {
-    .n_objects = 16
+    .n_objects = 64
 };
 
 struct atlas {
@@ -240,7 +240,8 @@ uint16_t indices[] = {
 struct uniform_buffer_object {
     struct matrix model;
     uint32_t solid_index,
-             outline_index;
+             outline_index,
+             glow_index;
 };
 
 /*****************************************************************************
@@ -288,7 +289,6 @@ static enum renderer_result setup_sync_objects();
 static enum renderer_result setup_descriptor_pool();
 static enum renderer_result setup_descriptor_sets();
 static enum renderer_result setup_scene();
-static void destroy_scene();
 static enum renderer_result setup_texture(
         VkImage * texture_image,
         VkDeviceMemory * texture_image_memory
@@ -1377,7 +1377,7 @@ static enum renderer_result setup_descriptor_set_layout()
 {
     VkDescriptorSetLayoutCreateInfo layout_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 3,
+        .bindingCount = 2,
         .pBindings = (VkDescriptorSetLayoutBinding[]) {
             {
                 .binding = 0,
@@ -1394,7 +1394,8 @@ static enum renderer_result setup_descriptor_set_layout()
                 .descriptorCount = 1,
                 .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
                 .pImmutableSamplers = NULL
-            },
+            }
+            /*,
             {
                 .binding = 2,
                 .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -1402,6 +1403,7 @@ static enum renderer_result setup_descriptor_set_layout()
                 .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
                 .pImmutableSamplers = NULL
             }
+            */
         }
     };
 
@@ -2621,7 +2623,7 @@ static enum renderer_result record_command_buffer(
     vkCmdDrawIndexed(
             command_buffer,
             (uint32_t)(sizeof(indices) / sizeof(*indices)),
-            renderer.n_objects,
+            renderer.scene.n_objects,
             0,
             0,
             0
@@ -2697,6 +2699,7 @@ static enum renderer_result update_uniform_buffer(uint32_t image_index)
         matrix_multiply(&ubo.model, &ubo.model, &matrix_translate);
         ubo.solid_index = renderer.scene.objects[i].solid_index;
         ubo.outline_index = renderer.scene.objects[i].outline_index;
+        ubo.glow_index = renderer.scene.objects[i].glow_index;
 
         memcpy(
                 renderer.uniform_buffers_mapped[image_index] +
@@ -3089,7 +3092,8 @@ enum renderer_result renderer_init(
 /* shut down the renderer and free its resources */
 void renderer_terminate()
 {
-    destroy_scene();
+    scene_destroy(&renderer.scene);
+    renderer.scene = (struct scene) { };
 
     if (renderer.texture_sampler) {
         vkDestroySampler(renderer.device, renderer.texture_sampler, NULL);
@@ -3558,13 +3562,6 @@ static enum renderer_result setup_scene()
     }
 
     return RENDERER_OKAY;
-}
-
-static void destroy_scene()
-{
-//    free(renderer.scene.texture_names);
-    free(renderer.scene.objects);
-    renderer.scene = (struct scene) {};
 }
 
 static enum renderer_result setup_texture(

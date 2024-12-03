@@ -2,7 +2,7 @@
     
 struct object {
     mat4 model;
-    uint solid_index, outline_index;
+    uint solid_index, outline_index, glow_index;
 };
 
 layout(binding = 0, std140) uniform UniformBufferObject {
@@ -22,15 +22,14 @@ layout(location = 3) in vec2 inTexCoord;
 layout(location = 0) out vec3 fragColor;
 layout(location = 1) out vec3 fragNormal;
 layout(location = 2) out vec2 fragTexCoord;
-layout(location = 3) out flat ivec2 texture_indices;
+layout(location = 3) out flat ivec3 texture_indices;
 
 void main() {
     vec4 pos = vec4(inPosition, 1.0) * ubo.objects[gl_InstanceIndex].model * view * projection;
     gl_Position = vec4(pos.xy, pos.z, pos.w);
     fragColor = inColor;
     fragTexCoord = inTexCoord;
-    texture_indices = ivec2(ubo.objects[gl_InstanceIndex].solid_index, ubo.objects[gl_InstanceIndex].outline_index);
+    texture_indices = ivec3(ubo.objects[gl_InstanceIndex].solid_index, ubo.objects[gl_InstanceIndex].outline_index, ubo.objects[gl_InstanceIndex].glow_index);
     vec4 normal = vec4(inNormal, 1.0) * ubo.objects[gl_InstanceIndex].model * view * projection;
     fragNormal = normalize(normal.xyz);
-    
 }

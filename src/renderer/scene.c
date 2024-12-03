@@ -28,20 +28,66 @@
 
 void soho_step(struct scene * scene)
 {
-    static size_t tick;
+    static size_t tick, camera_tick;
 
+    (void)tick;
+    /*
     float r = 2.0;
     float x = r * cos((float)tick / 100.0);
     float y = 0.25;
     float z = r * sin((float)tick / 100.0);
+    */
 
-    scene->camera.x = x;
-    scene->camera.y = y;
-    scene->camera.z = z;
-    quaternion_from_axis_angle(
-            &scene->camera.rotation, 0.0, -1.0, 0.0, atan2(x, z));
+    if (scene->queue) {
+
+        float interp = (float)camera_tick / (float)scene->queue->delta_time;
+
+        scene->camera.x = scene->previous_camera.x +
+            interp * (scene->queue->camera.x - scene->previous_camera.x);
+        scene->camera.y = scene->previous_camera.y +
+            interp * (scene->queue->camera.y - scene->previous_camera.y);
+        scene->camera.z = scene->previous_camera.z +
+            interp * (scene->queue->camera.z - scene->previous_camera.z);
+
+        quaternion_slerp(
+                &scene->camera.rotation,
+                &scene->previous_camera.rotation,
+                &scene->queue->camera.rotation,
+                interp
+            );
+
+        if (camera_tick == scene->queue->delta_time) {
+            camera_tick = 0;
+            scene->previous_camera = scene->camera;
+            struct camera_queue * old = scene->queue;
+            scene->queue = scene->queue->next;
+            free(old);
+        }
+
+        camera_tick++;
+    }
 
     tick++;
+}
+
+void enqueue_camera(struct scene * scene, struct camera * camera, size_t delta)
+{
+    struct camera_queue * node = malloc(sizeof(*node));
+    *node = (struct camera_queue) {
+        .camera = *camera,
+        .delta_time = delta,
+        .next = NULL
+    };
+
+    if (scene->queue) {
+        struct camera_queue * head = scene->queue;
+        while (head->next) {
+            head = head->next;
+        }
+        head->next = node;
+    } else {
+        scene->queue = node;
+    }
 }
 
 void scene_load_soho(struct scene * scene)
@@ -60,6 +106,12 @@ void scene_load_soho(struct scene * scene)
         TEXTURE_BASE_PATH "/soho/512/front-wall-interior-solid.dfield",
         TEXTURE_BASE_PATH "/soho/512/front-wall-interior-outline.dfield",
         TEXTURE_BASE_PATH "/soho/512/roof-interior-outline.dfield",
+        TEXTURE_BASE_PATH "/soho/512/road-solid.dfield",
+        TEXTURE_BASE_PATH "/soho/512/road-outline.dfield",
+        TEXTURE_BASE_PATH "/soho/512/lamp-solid.dfield",
+        TEXTURE_BASE_PATH "/soho/512/lamp-outline.dfield",
+        TEXTURE_BASE_PATH "/soho/512/lamp-glow.dfield",
+        TEXTURE_BASE_PATH "/soho/512/fence-outline.dfield",
     };
     size_t n_filenames = sizeof(filenames) / sizeof(*filenames);
 
@@ -67,7 +119,7 @@ void scene_load_soho(struct scene * scene)
     scene->n_textures = n_filenames;
     scene->step = &soho_step;
 
-    scene->n_objects = 12;
+    scene->n_objects = 28;
     scene->objects = malloc(sizeof(*scene->objects) * scene->n_objects);
 
     /* object 0: the front wall */
@@ -258,4 +310,348 @@ void scene_load_soho(struct scene * scene)
     quaternion_identity(&scene->objects[11].rotation);
     quaternion_multiply(
             &scene->objects[11].rotation, &scene->objects[11].rotation, &q_tmp);
+
+/* object 12: the road */
+    scene->objects[12] = (struct object) {
+        .cx = 0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = 0.0,
+        .y = -0.5,
+        .z = -1.0,
+        .scale = 2.0,
+        .solid_index = 13,
+        .outline_index = 14
+    };
+
+    quaternion_from_axis_angle(
+            &scene->objects[12].rotation, 1.0, 0.0, 0.0, M_PI / 2.0);
+    struct quaternion q_tmp_2;
+    quaternion_from_axis_angle(
+            &q_tmp_2, 0.0, 0.0, 1.0, M_PI / 2);
+    quaternion_multiply(
+            &scene->objects[12].rotation, &scene->objects[12].rotation, &q_tmp_2);
+
+    scene->objects[13] = (struct object) {
+        .cx = 0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = -2.0,
+        .y = -0.5,
+        .z = -1.0,
+        .scale = 2.0,
+        .solid_index = 13,
+        .outline_index = 14
+    };
+
+    quaternion_from_axis_angle(
+            &scene->objects[13].rotation, 1.0, 0.0, 0.0, M_PI / 2.0);
+    quaternion_multiply(
+            &scene->objects[13].rotation, &scene->objects[13].rotation, &q_tmp_2);
+
+    scene->objects[14] = (struct object) {
+        .cx = 0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = -0.0,
+        .y = -0.0,
+        .z = -1.5,
+        .scale = 1.0,
+        .solid_index = 15,
+        .outline_index = 16,
+        .glow_index = 17
+    };
+
+    quaternion_identity(&scene->objects[14].rotation);
+
+    scene->objects[15] = (struct object) {
+        .cx = 0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = -0.0,
+        .y = -0.0,
+        .z = -1.5,
+        .scale = 1.0,
+        .solid_index = 15,
+        .outline_index = 16,
+        .glow_index = 17
+    };
+
+    quaternion_identity(&scene->objects[15].rotation);
+    quaternion_multiply(
+            &scene->objects[15].rotation, &scene->objects[15].rotation, &q_tmp);
+
+    scene->objects[16] = (struct object) {
+        .cx = 0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = -1.5,
+        .y = -0.0,
+        .z = -1.5,
+        .scale = 1.0,
+        .solid_index = 15,
+        .outline_index = 16,
+        .glow_index = 17
+    };
+
+    quaternion_identity(&scene->objects[16].rotation);
+
+    scene->objects[17] = (struct object) {
+        .cx = 0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = -1.5,
+        .y = -0.0,
+        .z = -1.5,
+        .scale = 1.0,
+        .solid_index = 15,
+        .outline_index = 16,
+        .glow_index = 17
+    };
+
+    quaternion_identity(&scene->objects[17].rotation);
+    quaternion_multiply(
+            &scene->objects[17].rotation, &scene->objects[17].rotation, &q_tmp);
+
+
+    scene->objects[18] = (struct object) {
+        .cx = 0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = -3.0,
+        .y = -0.0,
+        .z = -1.5,
+        .scale = 1.0,
+        .solid_index = 15,
+        .outline_index = 16,
+        .glow_index = 17
+    };
+
+    quaternion_identity(&scene->objects[18].rotation);
+
+    scene->objects[19] = (struct object) {
+        .cx = 0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = -3.0,
+        .y = -0.0,
+        .z = -1.5,
+        .scale = 1.0,
+        .solid_index = 15,
+        .outline_index = 16,
+        .glow_index = 17
+    };
+
+    quaternion_identity(&scene->objects[19].rotation);
+    quaternion_multiply(
+            &scene->objects[19].rotation, &scene->objects[19].rotation, &q_tmp);
+
+    scene->objects[20] = (struct object) {
+        .cx = 0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = 0.0,
+        .y = -0.0,
+        .z = -1.65,
+        .scale = 1.0,
+        .solid_index = 18,
+        .outline_index = 18,
+    };
+
+    quaternion_identity(&scene->objects[20].rotation);
+
+    scene->objects[21] = (struct object) {
+        .cx = 0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = 0.0,
+        .y = -0.0,
+        .z = -1.65,
+        .scale = 1.0,
+        .solid_index = 18,
+        .outline_index = 18,
+    };
+
+    quaternion_identity(&scene->objects[21].rotation);
+    quaternion_multiply(
+            &scene->objects[21].rotation, &scene->objects[21].rotation, &q_tmp);
+
+    scene->objects[22] = (struct object) {
+        .cx = 0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = -1.0,
+        .y = -0.0,
+        .z = -1.65,
+        .scale = 1.0,
+        .solid_index = 18,
+        .outline_index = 18,
+    };
+
+    quaternion_identity(&scene->objects[22].rotation);
+
+    scene->objects[23] = (struct object) {
+        .cx = 0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = -1.0,
+        .y = -0.0,
+        .z = -1.65,
+        .scale = 1.0,
+        .solid_index = 18,
+        .outline_index = 18,
+    };
+
+    quaternion_identity(&scene->objects[23].rotation);
+    quaternion_multiply(
+            &scene->objects[23].rotation, &scene->objects[23].rotation, &q_tmp);
+
+    scene->objects[24] = (struct object) {
+        .cx = 0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = -2.0,
+        .y = -0.0,
+        .z = -1.65,
+        .scale = 1.0,
+        .solid_index = 18,
+        .outline_index = 18,
+    };
+
+    quaternion_identity(&scene->objects[24].rotation);
+
+    scene->objects[25] = (struct object) {
+        .cx = 0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = -2.0,
+        .y = -0.0,
+        .z = -1.65,
+        .scale = 1.0,
+        .solid_index = 18,
+        .outline_index = 18,
+    };
+
+    quaternion_identity(&scene->objects[25].rotation);
+    quaternion_multiply(
+            &scene->objects[25].rotation, &scene->objects[25].rotation, &q_tmp);
+
+    scene->objects[26] = (struct object) {
+        .cx = 0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = -3.0,
+        .y = -0.0,
+        .z = -1.65,
+        .scale = 1.0,
+        .solid_index = 18,
+        .outline_index = 18,
+    };
+
+    quaternion_identity(&scene->objects[26].rotation);
+
+    scene->objects[27] = (struct object) {
+        .cx = 0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x = -3.0,
+        .y = -0.0,
+        .z = -1.65,
+        .scale = 1.0,
+        .solid_index = 18,
+        .outline_index = 18,
+    };
+
+    quaternion_identity(&scene->objects[27].rotation);
+    quaternion_multiply(
+            &scene->objects[27].rotation, &scene->objects[27].rotation, &q_tmp);
+
+
+    /* setup the camera */
+    scene->camera = (struct camera) {
+        .rotation = { 0.0, 0.0, 0.0, 1.0 },
+        .x = 0.0,
+        .y = 0.0,
+        .z = 1.0
+    };
+    scene->previous_camera = scene->camera;
+    quaternion_from_axis_angle(
+            &scene->camera.rotation, 0.0, 1.0, 0.0, M_PI / 2);
+
+    struct quaternion q_final;
+    quaternion_from_axis_angle(&q_final, 0.0, 1.0, 0.0, -M_PI / 2);
+
+    struct quaternion q_final_2;
+    quaternion_from_axis_angle(&q_final_2, 0.0, 1.0, 0.0, M_PI / 2);
+
+
+    enqueue_camera(scene,
+            &(struct camera) {
+                .rotation = q_final,
+                .x = 3.0,
+                .y = 0.0,
+                .z = 1.0
+            },
+            360
+        );
+    enqueue_camera(scene,
+            &(struct camera) {
+                .rotation = q_final,
+                .x = 3.0,
+                .y = 0.0,
+                .z = 1.0
+            },
+            180
+        );
+    enqueue_camera(scene,
+            &(struct camera) {
+                .rotation = q_final,
+                .x = 0.0,
+                .y = 0.0,
+                .z = 1.0
+            },
+            360
+        );
+    enqueue_camera(scene,
+            &(struct camera) {
+                .rotation = q_final_2,
+                .x = 0.0,
+                .y = 0.0,
+                .z = 1.0
+            },
+            360
+        );
+    enqueue_camera(scene,
+            &(struct camera) {
+                .rotation = q_final_2,
+                .x = 0.0,
+                .y = 0.0,
+                .z = 1.0
+            },
+            90
+        );
+    enqueue_camera(scene,
+            &(struct camera) {
+                .rotation = q_final_2,
+                .x = 3.0,
+                .y = 0.0,
+                .z = 1.0
+            },
+            360
+        );
 }
+
+void scene_destroy(struct scene * scene)
+{
+    free(scene->objects);
+    if (scene->queue) {
+        struct camera_queue * next = scene->queue->next;
+        free(scene->queue);
+        while (next) {
+            struct camera_queue * prev = next;
+            next = next->next;
+            free(prev);
+        }
+    }
+}
+

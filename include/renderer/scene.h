@@ -30,7 +30,13 @@ struct object {
     float x, y, z;
     float scale;
     uint32_t solid_index,
-             outline_index;
+             outline_index,
+             glow_index;
+};
+
+struct camera {
+    struct quaternion rotation;
+    float x, y, z;
 };
 
 struct scene {
@@ -40,13 +46,19 @@ struct scene {
     struct object * objects;
     void (*step)(struct scene * scene);
 
-    struct camera {
-        struct quaternion rotation;
-        float x, y, z;
-    } camera;
+    struct camera camera;
+    struct camera_queue * queue;
+    struct camera previous_camera;
+};
 
+struct camera_queue {
+    struct camera camera;
+    size_t delta_time;
+    struct camera_queue * next;
 };
 
 void scene_load_soho(struct scene * scene);
+
+void scene_destroy(struct scene * scene);
 
 #endif /* RENDERER_SCENE_H */
