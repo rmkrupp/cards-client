@@ -26,6 +26,10 @@
 #define TEXTURE_BASE_PATH "out/data"
 #endif /* TEXTURE_BASE_PATH */
 
+#ifndef TEXTURE_RES
+#define TEXTURE_RES "512"
+#endif /* TEXTURE_RES */
+
 void soho_step(struct scene * scene)
 {
     static size_t tick, camera_tick;
@@ -93,25 +97,25 @@ void enqueue_camera(struct scene * scene, struct camera * camera, size_t delta)
 void scene_load_soho(struct scene * scene)
 {
     static const char * filenames[] = {
-        TEXTURE_BASE_PATH "/soho/512/front-wall-solid.dfield",
-        TEXTURE_BASE_PATH "/soho/512/front-wall-outline.dfield",
-        TEXTURE_BASE_PATH "/soho/512/side-wall-solid.dfield",
-        TEXTURE_BASE_PATH "/soho/512/side-wall-outline.dfield",
-        TEXTURE_BASE_PATH "/soho/512/roof-solid.dfield",
-        TEXTURE_BASE_PATH "/soho/512/roof-outline.dfield",
-        TEXTURE_BASE_PATH "/soho/512/rear-wall-solid.dfield",
-        TEXTURE_BASE_PATH "/soho/512/rear-wall-outline.dfield",
-        TEXTURE_BASE_PATH "/soho/512/rear-wall-interior-solid.dfield",
-        TEXTURE_BASE_PATH "/soho/512/rear-wall-interior-outline.dfield",
-        TEXTURE_BASE_PATH "/soho/512/front-wall-interior-solid.dfield",
-        TEXTURE_BASE_PATH "/soho/512/front-wall-interior-outline.dfield",
-        TEXTURE_BASE_PATH "/soho/512/roof-interior-outline.dfield",
-        TEXTURE_BASE_PATH "/soho/512/road-solid.dfield",
-        TEXTURE_BASE_PATH "/soho/512/road-outline.dfield",
-        TEXTURE_BASE_PATH "/soho/512/lamp-solid.dfield",
-        TEXTURE_BASE_PATH "/soho/512/lamp-outline.dfield",
-        TEXTURE_BASE_PATH "/soho/512/lamp-glow.dfield",
-        TEXTURE_BASE_PATH "/soho/512/fence-outline.dfield",
+        TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/front-wall-solid.dfield",
+        TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/front-wall-outline.dfield",
+        TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/side-wall-solid.dfield",
+        TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/side-wall-outline.dfield",
+        TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/roof-solid.dfield",
+        TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/roof-outline.dfield",
+        TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/rear-wall-solid.dfield",
+        TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/rear-wall-outline.dfield",
+        TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/rear-wall-interior-solid.dfield",
+        TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/rear-wall-interior-outline.dfield",
+        TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/front-wall-interior-solid.dfield",
+        TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/front-wall-interior-outline.dfield",
+        TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/roof-interior-outline.dfield",
+        TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/road-solid.dfield",
+        TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/road-outline.dfield",
+        TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/lamp-solid.dfield",
+        TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/lamp-outline.dfield",
+        TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/lamp-glow.dfield",
+        TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/fence-outline.dfield",
     };
     size_t n_filenames = sizeof(filenames) / sizeof(*filenames);
 
