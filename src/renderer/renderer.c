@@ -2538,7 +2538,7 @@ static enum renderer_result update_uniform_buffer(uint32_t image_index)
     //matrix_translation(&view_matrix_b, 0 - ((float)(tick % 1000)) / 100.0, 0, 5 - ((float)(tick % 1000)) / 200.0);
     //matrix_translation(&view_matrix_b, 2, 0, 0.1);
     matrix_translation(&view_matrix_b, 0, 0, 2);
-    float r = 1.0;
+    float r = 2.0;
     float z = r * cos((float)tick / 100.0);
     float x = r * sin((float)tick / 100.0);
     //float x = -0.5;
@@ -2647,7 +2647,7 @@ static enum renderer_result update_uniform_buffer(uint32_t image_index)
         .z = 0.25,
         .scale = 1.05,
         .solid_index = 4,
-        .outline_index = 5
+        .outline_index = 12
     };
     object[6] = (struct object) {
         .cx = -0.0,
@@ -2658,7 +2658,7 @@ static enum renderer_result update_uniform_buffer(uint32_t image_index)
         .z = 0.25,
         .scale = 1.05,
         .solid_index = 4,
-        .outline_index = 5
+        .outline_index = 12
     };
     
     struct quaternion q_tmp;
@@ -3198,22 +3198,6 @@ enum renderer_result renderer_init(
         );
     if (result) return result;
 
-    /*
-    result = setup_texture(
-            "out/data/512/example.dfield",
-            &renderer.texture_outline,
-            &renderer.texture_outline_memory
-        );
-    if (result) return result;
-
-    result = setup_texture(
-            "out/data/512/example-solid.dfield",
-            &renderer.texture_solid,
-            &renderer.texture_solid_memory
-        );
-    if (result) return result;
-    */
-
     result = setup_texture_view();
     if (result) return result;
 
@@ -3732,6 +3716,7 @@ static enum renderer_result setup_texture(
         TEXTURE_BASE_PATH "/soho/512/rear-wall-interior-outline.dfield",
         TEXTURE_BASE_PATH "/soho/512/front-wall-interior-solid.dfield",
         TEXTURE_BASE_PATH "/soho/512/front-wall-interior-outline.dfield",
+        TEXTURE_BASE_PATH "/soho/512/roof-interior-outline.dfield",
     };
 
     size_t n_filenames = sizeof(filenames) / sizeof(*filenames);
