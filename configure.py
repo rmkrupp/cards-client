@@ -347,7 +347,7 @@ elif 'CFLAGS' in os.environ:
     w.comment('these are overriden below because CFLAGS was set')
 
 w.variable(key = 'cflags',
-           value = '-Wall -Wextra -Werror -fdiagnostics-color -flto -fopenmp')
+           value = '-Wall -Wextra -Werror -fdiagnostics-color -flto=auto -fopenmp')
 
 if args.ldflags:
     w.comment('these are overriden below because we were generated with --ldflags=' +
