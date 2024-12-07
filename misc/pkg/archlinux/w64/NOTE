@@ -1,2 +1,2 @@
 The current ArchLinux AUR PKGBUILD for GLFW won't build correctly if Doxygen is
-installed unless you add in GLFW_BUILD_TESTS=no to the build step
+installed unless you add in GLFW_BUILD_DOCS=no to the build step

@@ -240,17 +240,25 @@ def enable_release():
     w.variable(key = 'defines', value = '$defines -DNDEBUG')
 
 def enable_w64():
+    if args.O3:
+        w.comment('setting -O3 because we were generated with --O3')
+        o = '-O3'
+    else:
+        o = '-O2'
     args.disable_argp = True
-    w.variable(key = 'std', value = '-std=gnu2x')
-    w.variable(key = 'cflags', value = '$cflags -O2 -static')
+    w.variable(key = 'cflags', value = '$cflags -static ' + o)
     w.variable(key = 'windows', value = '-lgdi32 -mwindows')
     if args.enable_compatible:
         w.comment('adding compatibility defines because we were generated with --enable-compatible')
+        w.variable(key = 'std', value = '-std=gnu2x')
         w.variable(key = 'defines',
                    value = '$defines '+
                    '-Dconstexpr=const ' +
                    '"-Dstatic_assert(x)=" ' +
                    '-DENABLE_COMPAT')
+    else:
+        w.variable(key = 'std', value = '-std=gnu23')
+
     w.variable(key = 'includes',
                value = '$includes -I/usr/x86_64-w64-mingw32/include')
     w.variable(key = 'defines', value = '$defines -DNDEBUG')
