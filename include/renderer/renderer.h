@@ -23,6 +23,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+constexpr uint32_t N_LIGHTS = 16;
+
 /* the result of initializing the renderer */
 enum renderer_result {
     RENDERER_OKAY,
@@ -44,6 +46,9 @@ struct renderer_configuration {
 
     /* whether to enable sample shading */
     bool sample_shading;
+
+    /* resolution (0 to inherit from monitor) */
+    uint32_t width, height;
 
     /* texture atlas settings */
     struct atlas_configuration {

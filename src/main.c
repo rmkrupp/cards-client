@@ -33,7 +33,9 @@ int main(int argc, char ** argv)
                     .max_frames_in_flight = 2,
                     .anisotropic_filtering = true,
                     .sample_shading = true,
-                    .msaa_samples = 64
+                    .msaa_samples = 64,
+                    .width = 1920,
+                    .height = 1080
                 }
             );
     

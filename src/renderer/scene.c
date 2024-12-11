@@ -21,6 +21,7 @@
 #include "renderer/scene.h"
 #include <math.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 #ifndef TEXTURE_BASE_PATH
 #define TEXTURE_BASE_PATH "out/data"
@@ -33,62 +34,47 @@
 constexpr size_t n_raindrops = 100000;
 size_t rain_start, rain_stop;
 struct raindrop {
-    bool alive;
     float x, y, z;
     float velocity;
+    bool alive;
+    char padding[32 - sizeof(float) * 4 - sizeof(bool)];
+    /* pad to 32 bytes, half a cache line */
 } raindrops[n_raindrops] = {};
 
-void soho_step(struct scene * scene)
+static_assert(sizeof(struct raindrop) == 32);
+
+void enqueue_camera(struct scene * scene, struct camera * camera, size_t delta);
+
+void rain_step(struct scene * scene, double delta)
 {
-    static size_t tick, camera_tick;
-
-    (void)tick;
-    /*
-    float r = 2.0;
-    float x = r * cos((float)tick / 100.0);
-    float y = 0.25;
-    float z = r * sin((float)tick / 100.0);
-    */
-
-    if (scene->queue) {
-
-        float interp = (float)camera_tick / (float)scene->queue->delta_time;
-
-        scene->camera.x = scene->previous_camera.x +
-            interp * (scene->queue->camera.x - scene->previous_camera.x);
-        scene->camera.y = scene->previous_camera.y +
-            interp * (scene->queue->camera.y - scene->previous_camera.y);
-        scene->camera.z = scene->previous_camera.z +
-            interp * (scene->queue->camera.z - scene->previous_camera.z);
-
-        quaternion_slerp(
-                &scene->camera.rotation,
-                &scene->previous_camera.rotation,
-                &scene->queue->camera.rotation,
-                interp
-            );
-
-        if (camera_tick == scene->queue->delta_time) {
-            camera_tick = 0;
-            scene->previous_camera = scene->camera;
-            struct camera_queue * old = scene->queue;
-            scene->queue = scene->queue->next;
-            free(old);
-        }
-
-        camera_tick++;
-    }
-
-#pragma omp parallel for
+#pragma omp parallel for schedule(static, 32)
     for (size_t i = rain_start; i < rain_stop; i++) {
         struct raindrop * drop = &raindrops[i - rain_start];
         if (drop->alive) {
-            drop->velocity += 0.0005;
-            drop->y -= drop->velocity / 2.0;
-            drop->x -= drop->velocity / 10.0;
+            constexpr double accel = 0.0005;
+            drop->y -= delta * drop->velocity / 2.0 + 0.5 * accel * delta * delta;
+            drop->x -= delta * drop->velocity / 10.0 + 0.5 * accel * delta * delta;
+            drop->velocity += accel * delta;
             if (drop->y < -0.5) {
-                drop->alive = false;
-                scene->objects[i].enabled = false;
+                //drop->alive = false;
+                //scene->objects[i].enabled = false;
+                drop->alive = true;
+                drop->x = (float)((double)(rand() % 1000000) / 100000.0 - 5.0);
+                drop->z = (float)((double)(rand() % 1000000) / 100000.0 - 5.0);
+                drop->y = (float)((double)(rand() % 1000000) / 100000.0 + 2.0);
+                //drop->y = 2.0;
+                drop->velocity = 0.0;
+                quaternion_from_axis_angle(
+                        &scene->objects[i].rotation, 0.0, 1.0, 0.0, (float)(rand() % 200) / 100.0 * M_PI);
+                /*
+                scene->objects[i].x = drop->x;
+                scene->objects[i].y = drop->y;
+                scene->objects[i].z = drop->z;
+                */
+                scene->objects[i].enabled = true;
+                scene->objects[i].scale = 0.1 * (float)((double)(rand() % 100) / 50);
+                scene->objects[i].solid_index = 19;
+                scene->objects[i].outline_index = 20;
                 continue;
             }
             scene->objects[i].x = drop->x;
@@ -110,14 +96,102 @@ void soho_step(struct scene * scene)
                 scene->objects[i].enabled = true;
                 scene->objects[i].scale = 0.1;
                 scene->objects[i].solid_index = 19;
-                scene->objects[i].outline_index = 19;
+                scene->objects[i].outline_index = 20;
             } else {
                 scene->objects[i].enabled = false;
             }
         }
     }
+}
 
-    tick++;
+
+void soho_step(struct scene * scene, double delta_time)
+{
+    static double tick = 0.0, camera_tick = 0.0, fps_tick = 0.0;
+    static size_t frames = 0;
+    (void)fps_tick;
+
+    fps_tick += delta_time;
+    if (frames == 100) {
+        printf("FPS = %f\n", 100 / fps_tick);
+        fps_tick = 0;
+        frames = 0;
+    } else {
+        frames++;
+    }
+
+    if (scene->queue) {
+
+        camera_tick += delta_time;
+
+        double interp = (float)camera_tick / (float)scene->queue->delta_time;
+
+        scene->camera.x = scene->previous_camera.x +
+            interp * (scene->queue->camera.x - scene->previous_camera.x);
+        scene->camera.y = scene->previous_camera.y +
+            interp * (scene->queue->camera.y - scene->previous_camera.y);
+        scene->camera.z = scene->previous_camera.z +
+            interp * (scene->queue->camera.z - scene->previous_camera.z);
+
+        quaternion_slerp(
+                &scene->camera.rotation,
+                &scene->previous_camera.rotation,
+                &scene->queue->camera.rotation,
+                interp
+            );
+
+        if (camera_tick >= scene->queue->delta_time) {
+            scene->camera = scene->queue->camera;
+            camera_tick = 0;
+            scene->previous_camera = scene->camera;
+            struct camera_queue * old = scene->queue;
+            scene->queue = scene->queue->next;
+            free(old);
+        }
+
+    } else {
+       struct quaternion q_final;
+       quaternion_from_axis_angle(&q_final, 0.0, 1.0, 0.0, 0);
+ 
+       enqueue_camera(scene,
+               &(struct camera) {
+                   .rotation = q_final,
+                   .x = -1.0,
+                   .y = 0.25,
+                   .z = 1.0
+               },
+               6.0
+           );
+       enqueue_camera(scene,
+               &(struct camera) {
+                   .rotation = q_final,
+                   .x = 1.0,
+                   .y = 0.25,
+                   .z = 1.0
+               },
+               4.0
+           );
+    }
+
+    if (tick == 0) {
+        for (size_t i = 0; i < 1000; i++) {
+            //rain_step(scene, 1);
+        }
+        tick = 1;
+    } else {
+        /*
+        double next = tick + delta_time;
+        while (tick < next) {
+            rain_step(scene);
+            tick += 1;
+        }
+        */
+        rain_step(scene, delta_time * 120);
+        tick += 1;
+    }
+
+    //tick++;
+
 }
 
 void enqueue_camera(struct scene * scene, struct camera * camera, size_t delta)
@@ -162,7 +236,10 @@ void scene_load_soho(struct scene * scene)
         TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/lamp-outline.dfield",
         TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/lamp-glow.dfield",
         TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/fence-outline.dfield",
+        TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/rain-solid.dfield",
         TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/rain-outline.dfield",
+        TEXTURE_BASE_PATH "/soho/" TEXTURE_RES "/front-wall-glow.dfield",
+        TEXTURE_BASE_PATH "/" TEXTURE_RES "/gronk.dfield",
     };
     size_t n_filenames = sizeof(filenames) / sizeof(*filenames);
 
@@ -170,7 +247,42 @@ void scene_load_soho(struct scene * scene)
     scene->n_textures = n_filenames;
     scene->step = &soho_step;
 
-    scene->n_objects = 28 + n_raindrops;
+    scene->ambient_light = 0.0;
+    scene->n_lights = 3;
+    scene->lights = calloc(scene->n_lights, sizeof(*scene->lights));
+    scene->lights[0] = (struct light) {
+        .enabled = true,
+        .x = 0.0,
+        .y = 0.25,
+        .z = -1.5,
+        .intensity = 0.05,
+        .r = 1.0,
+        .g = 1.0,
+        .b = 1.0
+    };
+    scene->lights[1] = (struct light) {
+        .enabled = true,
+        .x = -1.5,
+        .y = 0.25,
+        .z = -1.5,
+        .intensity = 0.05,
+        .r = 1.0,
+        .g = 1.0,
+        .b = 1.0
+    };
+    scene->lights[2] = (struct light) {
+        .enabled = true,
+        .x = -3.0,
+        .y = 0.25,
+        .z = -1.5,
+        .intensity = 0.05,
+        .r = 1.0,
+        .g = 1.0,
+        .b = 1.0
+    };
+
+
+    scene->n_objects = 30 + n_raindrops;
     scene->objects = calloc(scene->n_objects, sizeof(*scene->objects));
 
     /* object 0: the front wall */
@@ -184,7 +296,8 @@ void scene_load_soho(struct scene * scene)
         .z = 0.0,
         .scale = 1.0,
         .solid_index = 0,
-        .outline_index = 1
+        .outline_index = 1,
+        .glow_index = 22
     };
     quaternion_identity(&scene->objects[0].rotation);
 
@@ -416,6 +529,7 @@ void scene_load_soho(struct scene * scene)
 
     scene->objects[14] = (struct object) {
         .enabled = true,
+        .glows = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -432,6 +546,7 @@ void scene_load_soho(struct scene * scene)
 
     scene->objects[15] = (struct object) {
         .enabled = true,
+        .glows = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -450,6 +565,7 @@ void scene_load_soho(struct scene * scene)
 
     scene->objects[16] = (struct object) {
         .enabled = true,
+        .glows = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -466,6 +582,7 @@ void scene_load_soho(struct scene * scene)
 
     scene->objects[17] = (struct object) {
         .enabled = true,
+        .glows = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -485,6 +602,7 @@ void scene_load_soho(struct scene * scene)
 
     scene->objects[18] = (struct object) {
         .enabled = true,
+        .glows = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -501,6 +619,7 @@ void scene_load_soho(struct scene * scene)
 
     scene->objects[19] = (struct object) {
         .enabled = true,
+        .glows = true,
         .cx = 0.0,
         .cy = 0.0,
         .cz = 0.0,
@@ -645,8 +764,40 @@ void scene_load_soho(struct scene * scene)
     quaternion_multiply(
             &scene->objects[27].rotation, &scene->objects[27].rotation, &q_tmp);
 
-    rain_start = 28;
-    rain_stop = 28 + n_raindrops;
+    scene->objects[28] = (struct object) {
+        .enabled = true,
+        .cx = 0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x =  0.15,
+        .y = -0.25,
+        .z = -0.5,
+        .scale = 0.5,
+        .solid_index = 22,
+        .outline_index = 22,
+    };
+
+    quaternion_identity(&scene->objects[28].rotation);
+
+    scene->objects[29] = (struct object) {
+        .enabled = true,
+        .cx = 0.0,
+        .cy = 0.0,
+        .cz = 0.0,
+        .x =  0.15,
+        .y = -0.25,
+        .z = -0.5,
+        .scale = 0.5,
+        .solid_index = 22,
+        .outline_index = 22,
+    };
+
+    quaternion_identity(&scene->objects[29].rotation);
+    quaternion_multiply(
+            &scene->objects[29].rotation, &scene->objects[29].rotation, &q_tmp);
+
+    rain_start = 30;
+    rain_stop = 30 + n_raindrops;
 
     /* setup the camera */
     scene->camera = (struct camera) {
@@ -657,74 +808,73 @@ void scene_load_soho(struct scene * scene)
     };
     scene->previous_camera = scene->camera;
     quaternion_from_axis_angle(
-            &scene->camera.rotation, 0.0, 1.0, 0.0, M_PI / 2);
+            &scene->camera.rotation, 0.0, 1.0, 0.0, 0);
 
+    /*
     struct quaternion q_final;
     quaternion_from_axis_angle(&q_final, 0.0, 1.0, 0.0, -M_PI / 2);
+    */
+    struct quaternion q_final;
+    quaternion_from_axis_angle(&q_final, 0.0, 1.0, 0.0, 0);
+
 
     struct quaternion q_final_2;
-    quaternion_from_axis_angle(&q_final_2, 0.0, 1.0, 0.0, M_PI / 2);
+    quaternion_from_axis_angle(&q_final_2, 0.0, 1.0, 0.0, 0);
 
 
     enqueue_camera(scene,
             &(struct camera) {
                 .rotation = q_final,
-                .x = 3.0,
-                .y = 0.0,
-                .z = 1.0
+                .x = 0.0,
+                .y = 0.25,
+                .z = 5.0
             },
-            360
+            6.0
+        );
+
+    enqueue_camera(scene,
+            &(struct camera) {
+                .rotation = q_final,
+                .x = -5.0,
+                .y = 0.25,
+                .z = 5.0
+            },
+            6.0
         );
     enqueue_camera(scene,
             &(struct camera) {
                 .rotation = q_final,
-                .x = 3.0,
-                .y = 0.0,
-                .z = 1.0
+                .x = 5.0,
+                .y = 0.25,
+                .z = 5.0
             },
-            180
+            6.0
         );
+    /*
     enqueue_camera(scene,
             &(struct camera) {
                 .rotation = q_final,
-                .x = 0.0,
-                .y = 0.0,
-                .z = 1.0
-            },
-            360
-        );
-    enqueue_camera(scene,
-            &(struct camera) {
-                .rotation = q_final_2,
-                .x = 0.0,
-                .y = 0.0,
-                .z = 1.0
-            },
-            360
-        );
-    enqueue_camera(scene,
-            &(struct camera) {
-                .rotation = q_final_2,
-                .x = 0.0,
-                .y = 0.0,
-                .z = 1.0
+                .x = -1.0,
+                .y = 0.25,
+                .z = 0.5
             },
             90
         );
     enqueue_camera(scene,
             &(struct camera) {
-                .rotation = q_final_2,
-                .x = 3.0,
-                .y = 0.0,
-                .z = 1.0
+                .rotation = q_final,
+                .x = 1.0,
+                .y = 0.25,
+                .z = 0.5
             },
-            360
+            240
         );
-
+    */
 }
 
 void scene_destroy(struct scene * scene)
 {
+    free(scene->lights);
     free(scene->objects);
     if (scene->queue) {
         struct camera_queue * next = scene->queue->next;

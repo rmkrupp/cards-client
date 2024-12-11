@@ -146,6 +146,10 @@ struct renderer {
     VkBuffer index_buffer;
     VkDeviceMemory index_buffer_memory;
 
+    VkBuffer * storage_buffers; /* these three indexed by current_frame */
+    VkDeviceMemory * storage_buffer_memories;
+    void ** storage_buffers_mapped;
+
     VkBuffer * uniform_buffers; /* these three indexed by current_frame */
     VkDeviceMemory * uniform_buffer_memories;
     void ** uniform_buffers_mapped;
@@ -181,10 +185,12 @@ struct renderer {
     VkImage oit_aux;
     */
 
+    size_t sbo_size; /* the padded size of a storage_buffer_object */
     size_t ubo_size; /* the padded size of a uniform_buffer_object */
 
     size_t n_objects; /* the maximum number of objects supported */
 
+    double time;
     struct scene scene; /* the loaded scene */
 
     struct push_constants {
@@ -195,6 +201,8 @@ struct renderer {
 } renderer = {
     .n_objects = 100 * 1048
 };
+
+static_assert(sizeof(renderer.push_constants) <= 128);
 
 struct atlas {
     VkImage image;
@@ -237,13 +245,26 @@ uint16_t indices[] = {
     0, 1, 2, 2, 3, 0
 };
 
-struct uniform_buffer_object {
+struct storage_buffer_object {
     struct matrix model;
     uint32_t solid_index,
              outline_index,
              glow_index;
     uint32_t flags;
 };
+
+struct uniform_buffer_object {
+    float ambient_light;
+    float padding[15];
+    struct {
+        float position[4];
+        float color[4];
+        float intensity;
+        uint32_t flags;
+        float padding[14];
+    } lights[N_LIGHTS];
+} ubo;
+
 
 /*****************************************************************************
  *                           FUNCTIONS IN THIS FILE                          *
@@ -541,9 +562,10 @@ static enum renderer_result setup_glfw()
     renderer.glfw_needs_terminate = true;
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    //glfwWindowHint(GLFW_REFRESH_RATE, 60);
     /* TODO: configurable: window resolution, fullscreen vs windowed */
     const GLFWvidmode * mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
-    renderer.window = glfwCreateWindow(mode->width, mode->height, "gronk.", NULL, NULL);
+    renderer.window = glfwCreateWindow(mode->width, mode->height, "gronk.", glfwGetPrimaryMonitor(), NULL);
 
     if (!renderer.window) {
         fprintf(stderr, "[renderer] glfwCreateWindow() failed\n");
@@ -1334,6 +1356,16 @@ static enum renderer_result setup_image_views()
             &renderer.depth_image_view
         );
 
+    if (result != VK_SUCCESS) {
+        fprintf(
+                stderr,
+                "[renderer] vkCreateImageView() failed (%d)\n",
+                result
+            );
+        renderer_terminate();
+        return RENDERER_ERROR;
+    }
+
     VkImageViewCreateInfo color_create_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image = renderer.color_image,
@@ -1378,13 +1410,11 @@ static enum renderer_result setup_descriptor_set_layout()
 {
     VkDescriptorSetLayoutCreateInfo layout_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 2,
+        .bindingCount = 3,
         .pBindings = (VkDescriptorSetLayoutBinding[]) {
             {
                 .binding = 0,
-                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                /* FIX */
-                //.descriptorCount = renderer.n_objects,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .descriptorCount = 1,
                 .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
                 .pImmutableSamplers = NULL
@@ -1395,16 +1425,14 @@ static enum renderer_result setup_descriptor_set_layout()
                 .descriptorCount = 1,
                 .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
                 .pImmutableSamplers = NULL
-            }
-            /*,
+            },
             {
                 .binding = 2,
-                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                 .descriptorCount = 1,
                 .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
                 .pImmutableSamplers = NULL
             }
-            */
         }
     };
 
@@ -1645,6 +1673,12 @@ static enum renderer_result setup_pipeline()
         return RENDERER_ERROR;
     }
 
+    struct fragment_specialization {
+        uint32_t n_lights;
+    } fragment_specialization = {
+        .n_lights = N_LIGHTS
+    };
+
     VkGraphicsPipelineCreateInfo pipeline_info = {
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         .stageCount = 2,
@@ -1654,14 +1688,25 @@ static enum renderer_result setup_pipeline()
                 .stage = VK_SHADER_STAGE_VERTEX_BIT,
                 .pName = "main",
                 .module = vertex_module
-                /* can add specialization info here */
             },
             {
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                 .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
                 .pName = "main",
-                .module = fragment_module
-                /* can add specialization info here */
+                .module = fragment_module,
+                .pSpecializationInfo = &(VkSpecializationInfo) {
+                    .mapEntryCount = 1,
+                    .pMapEntries = (VkSpecializationMapEntry[]) {
+                        {
+                            .constantID = 0,
+                            .offset = offsetof(
+                                    struct fragment_specialization, n_lights),
+                            .size = sizeof(fragment_specialization.n_lights)
+                        }
+                    },
+                    .dataSize = sizeof(fragment_specialization),
+                    .pData = &fragment_specialization
+                }
             }
         },
         .pDynamicState = &(VkPipelineDynamicStateCreateInfo) {
@@ -1822,7 +1867,6 @@ static enum renderer_result setup_framebuffers()
 {
     renderer.framebuffers = calloc(
             renderer.n_swap_chain_images, sizeof(*renderer.framebuffers));
-
 
     for (uint32_t i = 0; i < renderer.n_swap_chain_images; i++) {
         VkFramebufferCreateInfo framebuffer_info = {
@@ -2038,6 +2082,19 @@ static enum renderer_result setup_vertex_buffer()
 /* create uniform buffers for each frame */
 static enum renderer_result setup_uniform_buffers()
 {
+    renderer.storage_buffers = calloc(
+            renderer.config.max_frames_in_flight,
+            sizeof(*renderer.storage_buffers)
+        );
+    renderer.storage_buffer_memories = calloc(
+            renderer.config.max_frames_in_flight,
+            sizeof(*renderer.storage_buffer_memories)
+        );
+    renderer.storage_buffers_mapped = calloc(
+            renderer.config.max_frames_in_flight,
+            sizeof(*renderer.storage_buffers_mapped)
+        );
+
     renderer.uniform_buffers = calloc(
             renderer.config.max_frames_in_flight,
             sizeof(*renderer.uniform_buffers)
@@ -2052,12 +2109,34 @@ static enum renderer_result setup_uniform_buffers()
         );
 
     uint32_t multiple = 16;
-    uint32_t base_size = sizeof(struct uniform_buffer_object);
+    uint32_t base_size = sizeof(struct storage_buffer_object);
+    if (base_size % multiple != 0) {
+        renderer.sbo_size = base_size + (multiple - base_size % multiple);
+    } else {
+        renderer.sbo_size = base_size;
+    }
+
+    fprintf(
+            stderr,
+            "[renderer] (INFO) sizeof(sbo) = %zu, sbo_size = %zu\n",
+            sizeof(struct storage_buffer_object),
+            renderer.sbo_size
+        );
+
+    fprintf(
+            stderr,
+            "[renderer] (INFO) allocating %zu bytes for the primary storage buffer\n",
+            renderer.sbo_size * renderer.n_objects *
+            renderer.config.max_frames_in_flight
+        );
+
+    base_size = sizeof(struct uniform_buffer_object);
     if (base_size % multiple != 0) {
         renderer.ubo_size = base_size + (multiple - base_size % multiple);
     } else {
         renderer.ubo_size = base_size;
     }
+
     fprintf(
             stderr,
             "[renderer] (INFO) sizeof(ubo) = %zu, ubo_size = %zu\n",
@@ -2067,16 +2146,36 @@ static enum renderer_result setup_uniform_buffers()
 
     fprintf(
             stderr,
-            "[renderer] (INFO) allocating %zu bytes for uniform buffers\n",
-            renderer.ubo_size * renderer.n_objects *
+            "[renderer] (INFO) allocating %zu bytes for the uniform buffer\n",
+            renderer.ubo_size * 1 *
             renderer.config.max_frames_in_flight
         );
 
     for (uint32_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
         if (create_buffer(
+                &renderer.storage_buffers[i],
+                &renderer.storage_buffer_memories[i],
+                renderer.sbo_size * renderer.n_objects,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+            )) {
+            return RENDERER_ERROR;
+        }
+
+        vkMapMemory(
+                renderer.device,
+                renderer.storage_buffer_memories[i],
+                0,
+                renderer.sbo_size * renderer.n_objects,
+                0,
+                &renderer.storage_buffers_mapped[i]
+            );
+
+        if (create_buffer(
                 &renderer.uniform_buffers[i],
                 &renderer.uniform_buffer_memories[i],
-                renderer.ubo_size * renderer.n_objects,
+                renderer.ubo_size,
                 VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
@@ -2088,10 +2187,11 @@ static enum renderer_result setup_uniform_buffers()
                 renderer.device,
                 renderer.uniform_buffer_memories[i],
                 0,
-                renderer.ubo_size * renderer.n_objects,
+                renderer.ubo_size,
                 0,
                 &renderer.uniform_buffers_mapped[i]
             );
+
     }
 
     return RENDERER_OKAY;
@@ -2273,15 +2373,15 @@ static enum renderer_result setup_descriptor_pool()
         .poolSizeCount = 3,
         .pPoolSizes = (VkDescriptorPoolSize[]) {
             {
-                .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                .descriptorCount = renderer.config.max_frames_in_flight * renderer.n_objects
+                .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorCount = renderer.config.max_frames_in_flight
             },
             {
                 .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                 .descriptorCount = renderer.config.max_frames_in_flight
             },
             {
-                .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                 .descriptorCount = renderer.config.max_frames_in_flight
             }
         },
@@ -2340,21 +2440,16 @@ static enum renderer_result setup_descriptor_sets()
     free(layouts);
 
     for (uint32_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
-        /*
-        VkDescriptorBufferInfo * buffer_infos = malloc(
-                sizeof(*buffer_infos) * renderer.n_objects);
-        for (size_t j = 0; j < renderer.n_objects; j++) {
-           buffer_infos[j] = (VkDescriptorBufferInfo) {
-               .buffer = renderer.uniform_buffers[i],
-               .offset = renderer.ubo_size * j,
-               .range = sizeof(struct uniform_buffer_object)
-           }; 
-        }
-        */
-        VkDescriptorBufferInfo buffer_info = {
+        VkDescriptorBufferInfo storage_buffer_info = {
+            .buffer = renderer.storage_buffers[i],
+            .offset = 0,
+            .range = renderer.sbo_size * renderer.n_objects
+        };
+
+        VkDescriptorBufferInfo uniform_buffer_info = {
             .buffer = renderer.uniform_buffers[i],
             .offset = 0,
-            .range = renderer.ubo_size * renderer.n_objects
+            .range = renderer.ubo_size
         };
 
         VkWriteDescriptorSet descriptor_writes[] = {
@@ -2363,13 +2458,9 @@ static enum renderer_result setup_descriptor_sets()
                 .dstSet = renderer.descriptor_sets[i],
                 .dstBinding = 0,
                 .dstArrayElement = 0,
-                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                // FIX
-                //.descriptorCount = renderer.n_objects,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 .descriptorCount = 1,
-                // FIX
-                //.pBufferInfo = buffer_infos,
-                .pBufferInfo = &buffer_info,
+                .pBufferInfo = &storage_buffer_info,
                 .pImageInfo = NULL,
                 .pTexelBufferView = NULL
             },
@@ -2387,14 +2478,22 @@ static enum renderer_result setup_descriptor_sets()
                     .sampler = renderer.texture_sampler
                 },
                 .pTexelBufferView = NULL
+            },
+            {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = renderer.descriptor_sets[i],
+                .dstBinding = 2,
+                .dstArrayElement = 0,
+                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .descriptorCount = 1,
+                .pBufferInfo = &uniform_buffer_info,
+                .pImageInfo = NULL,
+                .pTexelBufferView = NULL
             }
         };
 
         vkUpdateDescriptorSets(
-                renderer.device, 2, descriptor_writes, 0, NULL);
-
-        // FIX
-        //free(buffer_infos);
+                renderer.device, 3, descriptor_writes, 0, NULL);
     }
 
     return RENDERER_OKAY;
@@ -2502,7 +2601,7 @@ static enum renderer_result record_command_buffer(
         .clearValueCount = 2,
         .pClearValues = (VkClearValue[]) {
             {
-                .color = { { 1.0f, 1.0f, 1.0f, 1.0f } }
+                .color = { { 0.1f, 0.1f, 0.1f, 1.0f } }
             },
             {
                 .depthStencil = { 1.0f, 0 }
@@ -2596,6 +2695,7 @@ static enum renderer_result record_command_buffer(
 
     vkCmdEndRenderPass(command_buffer);
 
+
     result = vkEndCommandBuffer(command_buffer);
 
     if (result != VK_SUCCESS) {
@@ -2605,42 +2705,43 @@ static enum renderer_result record_command_buffer(
     return RENDERER_OKAY;
 }
 
-
 /* TODO: investigate push constants */
 static enum renderer_result update_uniform_buffer(uint32_t image_index)
 {
     /* push constants */
-    struct matrix view_matrix_a, view_matrix_b;
+    {
+        struct matrix view_matrix_a, view_matrix_b;
 
-    quaternion_normalize(
-            &renderer.scene.camera.rotation, &renderer.scene.camera.rotation);
-    quaternion_matrix(&view_matrix_a, &renderer.scene.camera.rotation);
-    matrix_translation(
-            &view_matrix_b,
-            renderer.scene.camera.x,
-            renderer.scene.camera.y,
-            renderer.scene.camera.z
-        );
+        quaternion_normalize(
+                &renderer.scene.camera.rotation, &renderer.scene.camera.rotation);
+        quaternion_matrix(&view_matrix_a, &renderer.scene.camera.rotation);
+        matrix_translation(
+                &view_matrix_b,
+                renderer.scene.camera.x,
+                renderer.scene.camera.y,
+                renderer.scene.camera.z
+            );
 
-    matrix_multiply(
-            &renderer.push_constants.view, &view_matrix_a, &view_matrix_b);
-    matrix_perspective(
-            &renderer.push_constants.projection,
-            -0.1f,
-            -1000.0f,
-            3.14159 / 4,
-            renderer.chain_details.extent.width /
-            (float)renderer.chain_details.extent.height
-        );
+        matrix_multiply(
+                &renderer.push_constants.view, &view_matrix_a, &view_matrix_b);
+        matrix_perspective(
+                &renderer.push_constants.projection,
+                -0.1f,
+                -1000.0f,
+                3.14159 / 4,
+                renderer.chain_details.extent.width /
+                (float)renderer.chain_details.extent.height
+            );
+    }
 
 #pragma omp parallel for
     for (size_t i = 0; i < renderer.scene.n_objects; i++) {
         struct matrix matrix_translate;
         struct matrix matrix_rotate;
-        struct uniform_buffer_object ubo;
+        struct storage_buffer_object sbo;
 
         matrix_translation_scale(
-                &ubo.model,
+                &sbo.model,
                 renderer.scene.objects[i].x,
                 renderer.scene.objects[i].y,
                 renderer.scene.objects[i].z,
@@ -2661,22 +2762,46 @@ static enum renderer_result update_uniform_buffer(uint32_t image_index)
                 &renderer.scene.objects[i].rotation
             );
 
-        matrix_multiply(&ubo.model, &ubo.model, &matrix_rotate);
-        matrix_multiply(&ubo.model, &ubo.model, &matrix_translate);
-        ubo.solid_index = renderer.scene.objects[i].solid_index;
-        ubo.outline_index = renderer.scene.objects[i].outline_index;
-        ubo.glow_index = renderer.scene.objects[i].glow_index;
-        ubo.flags = 0;
-        ubo.flags |= renderer.scene.objects[i].enabled ? 1 : 0;
+        matrix_multiply(&sbo.model, &sbo.model, &matrix_rotate);
+        matrix_multiply(&sbo.model, &sbo.model, &matrix_translate);
+        sbo.solid_index = renderer.scene.objects[i].solid_index;
+        sbo.outline_index = renderer.scene.objects[i].outline_index;
+        sbo.glow_index = renderer.scene.objects[i].glow_index;
+        sbo.flags = 0;
+        sbo.flags |= renderer.scene.objects[i].enabled ? 1 : 0;
+        sbo.flags |= renderer.scene.objects[i].glows ? 2 : 0;
 
         memcpy(
-                renderer.uniform_buffers_mapped[image_index] +
-                renderer.ubo_size * i,
+                renderer.storage_buffers_mapped[image_index] +
+                renderer.sbo_size * i,
+                &sbo,
+                sizeof(sbo)
+            );
+    }
+
+    {
+        ubo.ambient_light = renderer.scene.ambient_light;
+        for (size_t i = 0; i < N_LIGHTS; i++) {
+            if (i < renderer.scene.n_lights) {
+                ubo.lights[i].position[0] = renderer.scene.lights[i].x;
+                ubo.lights[i].position[1] = renderer.scene.lights[i].y;
+                ubo.lights[i].position[2] = renderer.scene.lights[i].z;
+                ubo.lights[i].color[0] = renderer.scene.lights[i].r;
+                ubo.lights[i].color[1] = renderer.scene.lights[i].g;
+                ubo.lights[i].color[2] = renderer.scene.lights[i].b;
+                ubo.lights[i].intensity = renderer.scene.lights[i].intensity;
+                ubo.lights[i].flags = renderer.scene.lights[i].enabled ? 1 : 0;
+            } else {
+                ubo.lights[i].flags = 0;
+            }
+        }
+
+        memcpy(
+                renderer.uniform_buffers_mapped[image_index],
                 &ubo,
                 sizeof(ubo)
             );
     }
-    
     return RENDERER_OKAY;
 }
 /* draw a frame */
@@ -2738,11 +2863,15 @@ static enum renderer_result renderer_draw_frame()
         return RENDERER_ERROR;
     }
 
-    /* for now, step here */
-    renderer.scene.step(&renderer.scene);
+    {
+        /* for now, step here */
+        double current_time = glfwGetTime();
+        renderer.scene.step(&renderer.scene, current_time - renderer.time);
+        renderer.time = current_time;
 
-    if (update_uniform_buffer(renderer.current_frame)) {
-        return RENDERER_ERROR;
+        if (update_uniform_buffer(renderer.current_frame)) {
+            return RENDERER_ERROR;
+        }
     }
 
     VkSubmitInfo submit_info = {
@@ -3159,6 +3288,29 @@ void renderer_terminate()
     if (renderer.uniform_buffers_mapped) {
         free(renderer.uniform_buffers_mapped);
         renderer.uniform_buffers_mapped = NULL;
+    }
+
+    if (renderer.storage_buffers) {
+        for (uint32_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
+            vkDestroyBuffer(
+                    renderer.device, renderer.storage_buffers[i], NULL);
+        }
+        free(renderer.storage_buffers);
+        renderer.storage_buffers = NULL;
+    }
+
+    if (renderer.storage_buffer_memories) {
+        for (uint32_t i = 0; i < renderer.config.max_frames_in_flight; i++) {
+            vkFreeMemory(
+                    renderer.device, renderer.storage_buffer_memories[i], NULL);
+        }
+        free(renderer.storage_buffer_memories);
+        renderer.storage_buffer_memories = NULL;
+    }
+
+    if (renderer.storage_buffers_mapped) {
+        free(renderer.storage_buffers_mapped);
+        renderer.storage_buffers_mapped = NULL;
     }
 
     if (renderer.framebuffers) {

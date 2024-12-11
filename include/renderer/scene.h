@@ -26,6 +26,7 @@
 
 struct object {
     bool enabled;
+    bool glows;
     struct quaternion rotation;
     float cx, cy, cz;
     float x, y, z;
@@ -40,16 +41,27 @@ struct camera {
     float x, y, z;
 };
 
+struct light {
+    bool enabled;
+    float x, y, z;
+    float intensity;
+    float r, g, b;
+};
+
 struct scene {
     size_t n_textures;
     const char ** texture_names;
     size_t n_objects;
     struct object * objects;
-    void (*step)(struct scene * scene);
+    void (*step)(struct scene * scene, double delta_time);
 
     struct camera camera;
     struct camera_queue * queue;
     struct camera previous_camera;
+
+    float ambient_light;
+    struct light * lights;
+    size_t n_lights;
 };
 
 struct camera_queue {

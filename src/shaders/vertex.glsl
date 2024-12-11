@@ -1,13 +1,13 @@
 #version 450
-    
+
 struct object {
     mat4 model;
     uint solid_index, outline_index, glow_index;
     uint flags;
 };
 
-layout(binding = 0, std140) uniform UniformBufferObject {
-    object objects[3];
+layout(binding = 0, std140) buffer readonly UniformBufferObject {
+    object objects[1];
 } ubo;
 
 layout(push_constant, std430) uniform pc {
@@ -21,20 +21,24 @@ layout(location = 2) in vec3 inNormal;
 layout(location = 3) in vec2 inTexCoord;
 
 layout(location = 0) out vec3 fragColor;
-layout(location = 1) out vec3 fragNormal;
-layout(location = 2) out vec2 fragTexCoord;
-layout(location = 3) out flat ivec3 texture_indices;
+layout(location = 1) out vec3 fragWorldPosition;
+layout(location = 2) out vec3 fragNormal;
+layout(location = 3) out vec2 fragTexCoord;
+layout(location = 4) out flat ivec3 texture_indices;
+layout(location = 5) out flat uint fragFlags;
 
 void main() {
     if (ubo.objects[gl_InstanceIndex].flags == 0) {
         gl_Position = vec4(0.0, 0.0, -10.0, 1.0);
     } else {
-        vec4 pos = vec4(inPosition, 1.0) * ubo.objects[gl_InstanceIndex].model * view * projection;
-        gl_Position = vec4(pos.xy, pos.z, pos.w);
+        vec4 worldPosition = vec4(inPosition, 1.0) * ubo.objects[gl_InstanceIndex].model;
+        gl_Position = worldPosition * view * projection;
+        fragWorldPosition = worldPosition.xyz;
     }
     fragColor = inColor;
     fragTexCoord = inTexCoord;
     texture_indices = ivec3(ubo.objects[gl_InstanceIndex].solid_index, ubo.objects[gl_InstanceIndex].outline_index, ubo.objects[gl_InstanceIndex].glow_index);
     vec4 normal = vec4(inNormal, 1.0) * ubo.objects[gl_InstanceIndex].model * view * projection;
     fragNormal = normalize(normal.xyz);
+    fragFlags = ubo.objects[gl_InstanceIndex].flags;
 }

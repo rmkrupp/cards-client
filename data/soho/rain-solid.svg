@@ -8,7 +8,7 @@
    version="1.1"
    id="svg1"
    inkscape:version="1.4 (e7c3feb100, 2024-10-09)"
-   sodipodi:docname="front-wall-solid.svg"
+   sodipodi:docname="rain-solid.svg"
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
    xmlns="http://www.w3.org/2000/svg"
@@ -23,9 +23,9 @@
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
      inkscape:document-units="mm"
-     inkscape:zoom="0.32819329"
-     inkscape:cx="1025.3104"
-     inkscape:cy="1535.6804"
+     inkscape:zoom="0.2320677"
+     inkscape:cx="1090.1991"
+     inkscape:cy="702.38124"
      inkscape:window-width="1440"
      inkscape:window-height="891"
      inkscape:window-x="0"
@@ -40,16 +40,8 @@
      inkscape:groupmode="layer"
      id="layer1">
     <path
-       id="rect2"
-       style="fill:#000000;stroke:#000000;stroke-width:7;fill-opacity:1"
-       d="m 183.80936,382.13 h -77.39341 v 156.18677 l -102.8660292,-3e-5 V 274.48325 H 538.31677 v 263.83349 l -354.50741,3e-5 z"
-       sodipodi:nodetypes="ccccccccc" />
-    <rect
-       style="fill:#ffffff;stroke:#000000;stroke-width:7;fill-opacity:1"
-       id="rect3"
-       width="195.0959"
-       height="99.966499"
-       x="259.59042"
-       y="339.40234" />
+       style="fill:#000000;stroke:#000000;stroke-width:20;stroke-dasharray:none"
+       d="M 269.43333,4.9999999e-6 V 541.86666"
+       id="path2" />
   </g>
 </svg>
