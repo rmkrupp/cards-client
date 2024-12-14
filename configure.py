@@ -33,7 +33,8 @@ import misc.ninja_syntax as ninja
 pkgconfig = {
         'release': 'pkg-config',
         'debug': 'pkg-config',
-        'w64': 'x86_64-w64-mingw32-pkg-config'
+        'w64': 'x86_64-w64-mingw32-pkg-config',
+        'w64-debug': 'x86_64-w64-mingw32-pkg-config'
     }
 
 #
@@ -55,14 +56,15 @@ parser.add_argument('--glslc', help='override glslc (and GLSLC)')
 parser.add_argument('--pkg-config', help='override pkg-config')
 
 parser.add_argument('--build',
-                    choices=['release', 'debug', 'w64'], default='debug',
+                    choices=['release', 'debug', 'w64', 'w64-debug'], default='debug',
                     help='set the build type (default: debug)')
 parser.add_argument('--enable-compatible', action='store_true',
                     help='enable compatibility mode for older compilers')
 parser.add_argument('--disable-sanitize', action='store_true',
                     help='don\'t enable the sanitizer in debug mode')
 parser.add_argument('--vulkan-version', default='auto',
-                    choices=['auto', '1.0', '1.1', '1.2', '1.3'])
+                    choices=['auto', '1.0', '1.1', '1.2', '1.3'],
+                    help='TODO')
 parser.add_argument('--build-native',
                     choices=['none', 'mtune', 'march', 'both'], default='none',
                     help='build with mtune=native or march=native')
@@ -130,11 +132,14 @@ def package(name,
             w.variable(alias + '_cflags', '$$($pkgconfig --cflags ' + name + ')')
             w.variable(alias + '_libs', '$$($pkgconfig --libs ' + name + ')')
         else:
-            if args.build not in pkgconfig:
+            if not args.pkg_config and args.build not in pkgconfig:
                 print('ERROR: --defer-pkg-config is false but there is no pkg-config for build type', args.build, '(have:', pkgconfig, ')', file=sys.stderr)
                 sys.exit(1)
 
-            pc = pkgconfig.get(args.build)
+            if args.pkg_config:
+                pc = args.pkg_config
+            else:
+                pc = pkgconfig.get(args.build)
             pc_cflags = subprocess.run([pc, '--cflags', name],
                                        capture_output=True)
             pc_libs = subprocess.run([pc, '--libs', name],
@@ -263,6 +268,29 @@ def enable_w64():
                value = '$includes -I/usr/x86_64-w64-mingw32/include')
     w.variable(key = 'defines', value = '$defines -DNDEBUG')
 
+def enable_w64_debug():
+    args.disable_argp = True
+    w.variable(key = 'cflags', value = '$cflags -static -static-libubsan -g3 -Og')
+    w.variable(key = 'windows', value = '-lgdi32 -mwindows')
+    if args.enable_compatible:
+        w.comment('adding compatibility defines because we were generated with --enable-compatible')
+        w.variable(key = 'std', value = '-std=gnu2x')
+        w.variable(key = 'defines',
+                   value = '$defines '+
+                   '-Dconstexpr=const ' +
+                   '"-Dstatic_assert(x)=" ' +
+                   '-DENABLE_COMPAT')
+    else:
+        w.variable(key = 'std', value = '-std=gnu23')
+
+    w.variable(key = 'includes',
+               value = '$includes -I/usr/x86_64-w64-mingw32/include')
+
+    if not args.force_version:
+        w.variable(key = 'version', value = '"$version"-debug')
+    else:
+        w.comment('not appending -debug because we were generated with --force-version=')
+
 #
 # THE WRITER
 #
@@ -312,15 +340,15 @@ warn_environment('CFLAGS', args.cc, '--cflags=')
 warn_environment('LDFLAGS', args.cc, '--ldflags=')
 
 if args.cc:
-    if (args.build == 'w64' and args.cc != 'x86_64-w64-mingw32-gcc') \
-            or (args.build != 'w64' and args.cc != 'gcc'):
+    if (args.build[:3] == 'w64' and args.cc != 'x86_64-w64-mingw32-gcc') \
+            or (args.build[:3] != 'w64' and args.cc != 'gcc'):
         w.comment('using this cc because we were generated with --cc=' +
                   args.cc)
     w.variable(key = 'cc', value = args.cc)
 elif 'CC' in os.environ:
     w.comment('using this cc because CC was set')
     w.variable(key = 'cc', value = os.environ['cc'])
-elif args.build == 'w64':
+elif args.build == 'w64' or args.build == 'w64-debug':
     w.variable(key = 'cc', value = 'x86_64-w64-mingw32-gcc')
 else:
     w.variable(key = 'cc', value = 'gcc')
@@ -339,7 +367,7 @@ if args.pkg_config:
     w.comment('using this pkg-config because we were generated with --pkg-config=' +
               args.pkg_config)
     w.variable(key = 'pkgconfig', value = args.pkg_config)
-elif args.build == 'w64':
+elif args.build == 'w64' or args.build == 'w64-debug':
     w.variable(key = 'pkgconfig', value = 'x86_64-w64-mingw32-pkg-config')
 else:
     w.variable(key = 'pkgconfig', value = 'pkg-config')
@@ -421,6 +449,10 @@ elif args.build == 'w64':
     w.comment('build mode: w64')
     w.comment('(this implies --disable-argp)')
     enable_w64()
+elif args.build == 'w64-debug':
+    w.comment('build mode: w64-debug')
+    w.comment('(this implies --disable-argp)')
+    enable_w64_debug()
 else:
     print('WARNING: unhandled build mode "' + args.build + '"', file=sys.stderr)
     w.comment('WARNING: unhandled build mode "' + args.build +'"')
