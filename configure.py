@@ -201,7 +201,7 @@ def exesuffix(root, enabled):
 def enable_debug():
     if args.enable_compatible:
         w.variable(key = 'std', value = '-std=gnu2x')
-        w.variable(key = 'cflags', value = '$cflags $sanflags -g -Og')
+        w.variable(key = 'cflags', value = '$cflags $sanflags -g3 -Og')
         w.comment('adding compatibility defines because we were generated with --enable-compatible')
         w.variable(key = 'defines',
                    value = '$defines '+
@@ -210,7 +210,7 @@ def enable_debug():
                    '-DENABLE_COMPAT')
     else:
         w.variable(key = 'std', value = '-std=gnu23')
-        w.variable(key = 'cflags', value = '$cflags $sanflags -g -Og')
+        w.variable(key = 'cflags', value = '$cflags $sanflags -g3 -Og')
 
     if not args.force_version:
         w.variable(key = 'version', value = '"$version"-debug')
@@ -355,7 +355,7 @@ elif 'CFLAGS' in os.environ:
     w.comment('these are overriden below because CFLAGS was set')
 
 w.variable(key = 'cflags',
-           value = '-Wall -Wextra -Werror -fdiagnostics-color -flto=auto -fopenmp')
+           value = '-Wall -Wextra -Werror -fdiagnostics-color -flto=auto -D_FORTIFY_SOURCE=2 -fopenmp')
 
 if args.ldflags:
     w.comment('these are overriden below because we were generated with --ldflags=' +
