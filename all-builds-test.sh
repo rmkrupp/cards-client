@@ -32,14 +32,18 @@ build --disable-argp
 build --ldflags="-Wl,--as-needed"
 build --no-defer-pkg-config
 
+build --build=w64-debug
+build --ldflags="-Wl,--as-needed" --build=w64-debug
+build --no-defer-pkg-config --build=w64-debug
+
 build --build=release
 build --disable-argp --build=release
 build --ldflags="-Wl,--as-needed" --build=release
 build --no-defer-pkg-config --build=release
 
-#build --build=w64
-#build --ldflags="-Wl,--as-needed" --build=w64
-#build --no-defer-pkg-config --build=w64
+build --build=w64
+build --ldflags="-Wl,--as-needed" --build=w64
+build --no-defer-pkg-config --build=w64
 
 
 # Clean up a bit
