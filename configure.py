@@ -62,6 +62,10 @@ parser.add_argument('--enable-compatible', action='store_true',
                     help='enable compatibility mode for older compilers')
 parser.add_argument('--disable-sanitize', action='store_true',
                     help='don\'t enable the sanitizer in debug mode')
+
+parser.add_argument('--fanalyzer', action='store_true',
+                    help='include -fanalyzer in c flags')
+
 parser.add_argument('--vulkan-version', default='auto',
                     choices=['auto', '1.0', '1.1', '1.2', '1.3'],
                     help='TODO')
@@ -384,6 +388,11 @@ elif 'CFLAGS' in os.environ:
 
 w.variable(key = 'cflags',
            value = '-Wall -Wextra -Werror -fdiagnostics-color -flto=auto -D_FORTIFY_SOURCE=2 -fopenmp')
+
+if args.fanalyzer:
+    w.comment('enabling -fanalyzer because we were generated with --fanalyzer')
+    w.variable(key = 'cflags',
+               value = '$cflags -fanalyzer')
 
 if args.ldflags:
     w.comment('these are overriden below because we were generated with --ldflags=' +
