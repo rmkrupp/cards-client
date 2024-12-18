@@ -135,6 +135,7 @@ enum dfield_result dfield_from_file(
     lzma_stream stream = LZMA_STREAM_INIT;
     lzma_ret ret = lzma_stream_decoder(&stream, lzma_memory_usage_limit, 0);
     if (ret != LZMA_OK) {
+        free(read_buffer);
         free(buffer);
         fclose(dfield_file);
         return DFIELD_RESULT_ERROR_LZMA;
@@ -224,6 +225,7 @@ enum dfield_result dfield_data_from_file(
 
     uint8_t * data = malloc(size);
     if (!data) {
+        fclose(raw_file);
         return DFIELD_RESULT_ERROR_MEMORY;
     }
 
