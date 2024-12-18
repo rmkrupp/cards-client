@@ -6,8 +6,8 @@ struct object {
     uint flags;
 };
 
-layout(binding = 0, std140) buffer readonly UniformBufferObject {
-    object objects[1];
+layout(binding = 0, std140) buffer restrict readonly UniformBufferObject {
+    object objects[];
 } ubo;
 
 layout(push_constant, std430) uniform pc {
@@ -28,17 +28,64 @@ layout(location = 4) out flat ivec3 texture_indices;
 layout(location = 5) out flat uint fragFlags;
 
 void main() {
-    if (ubo.objects[gl_InstanceIndex].flags == 0) {
+    uint flags = ubo.objects[gl_InstanceIndex].flags;
+
+    if ((flags & 1) == 0) {
+        // disabled
         gl_Position = vec4(0.0, 0.0, -10.0, 1.0);
+    } else if ((flags & 4) == 4) {
+        // rain
+
+        vec3 position = ubo.objects[gl_InstanceIndex].model[0].xyz;
+        vec4 rotation = ubo.objects[gl_InstanceIndex].model[1];
+        float scale = ubo.objects[gl_InstanceIndex].model[2].x;
+        float velocity = ubo.objects[gl_InstanceIndex].model[2].y;
+        mat4 m_scale_trans = mat4(
+            scale, 0.0, 0.0, position.x,
+            0.0, scale, 0.0, position.y,
+            0.0, 0.0, scale, position.z,
+            0.0, 0.0, 0.0, 1.0
+        );
+        mat4 m_rot = mat4(
+            1 - 2 * rotation.y * rotation.y - 2 * rotation.z * rotation.z,
+            2 * rotation.x * rotation.y - 2 * rotation.w * rotation.z,
+            2 * rotation.x * rotation.z + 2 * rotation.w * rotation.y,
+            0,
+
+            2 * rotation.x * rotation.y + 2 * rotation.w * rotation.z,
+            1 - 2 * rotation.x * rotation.x - 2 * rotation.z * rotation.z,
+            2 * rotation.y * rotation.z - 2 * rotation.w * rotation.x,
+            0,
+
+            2 * rotation.x * rotation.z - 2 * rotation.w * rotation.y,
+            2 * rotation.y * rotation.z + 2 * rotation.w * rotation.x,
+            1 - 2 * rotation.x * rotation.x - 2 * rotation.y * rotation.y,
+            0,
+
+            0,
+            0,
+            0,
+            1
+        );
+
+        vec4 worldPosition = vec4(inPosition, 1.0) * m_scale_trans * m_rot; 
+        gl_Position = worldPosition * view * projection;
+        fragWorldPosition = worldPosition.xyz;
+        fragColor = inColor;
+        fragTexCoord = inTexCoord;
+        texture_indices = ivec3(ubo.objects[gl_InstanceIndex].solid_index, ubo.objects[gl_InstanceIndex].outline_index, ubo.objects[gl_InstanceIndex].glow_index);
+        vec4 normal = vec4(inNormal, 1.0) * m_scale_trans * view * projection;
+        fragNormal = normalize(normal.xyz);
+        fragFlags = flags;
     } else {
         vec4 worldPosition = vec4(inPosition, 1.0) * ubo.objects[gl_InstanceIndex].model;
         gl_Position = worldPosition * view * projection;
         fragWorldPosition = worldPosition.xyz;
+        fragColor = inColor;
+        fragTexCoord = inTexCoord;
+        texture_indices = ivec3(ubo.objects[gl_InstanceIndex].solid_index, ubo.objects[gl_InstanceIndex].outline_index, ubo.objects[gl_InstanceIndex].glow_index);
+        vec4 normal = vec4(inNormal, 1.0) * ubo.objects[gl_InstanceIndex].model * view * projection;
+        fragNormal = normalize(normal.xyz);
+        fragFlags = flags;
     }
-    fragColor = inColor;
-    fragTexCoord = inTexCoord;
-    texture_indices = ivec3(ubo.objects[gl_InstanceIndex].solid_index, ubo.objects[gl_InstanceIndex].outline_index, ubo.objects[gl_InstanceIndex].glow_index);
-    vec4 normal = vec4(inNormal, 1.0) * ubo.objects[gl_InstanceIndex].model * view * projection;
-    fragNormal = normalize(normal.xyz);
-    fragFlags = ubo.objects[gl_InstanceIndex].flags;
 }

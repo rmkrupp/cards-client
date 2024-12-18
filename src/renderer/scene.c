@@ -61,7 +61,7 @@ void rain_step(struct scene * scene, double delta)
                 drop->alive = true;
                 drop->x = (float)((double)(rand() % 1000000) / 100000.0 - 5.0);
                 drop->z = (float)((double)(rand() % 1000000) / 100000.0 - 5.0);
-                drop->y = (float)((double)(rand() % 1000000) / 100000.0 + 2.0);
+                drop->y = (float)((double)(rand() % 1000000) / 100000.0 + 3.0);
                 //drop->y = 2.0;
                 drop->velocity = 0.0;
                 quaternion_from_axis_angle(
@@ -75,11 +75,12 @@ void rain_step(struct scene * scene, double delta)
                 scene->objects[i].scale = 0.1 * (float)((double)(rand() % 100) / 50);
                 scene->objects[i].solid_index = 19;
                 scene->objects[i].outline_index = 20;
-                continue;
             }
             scene->objects[i].x = drop->x;
             scene->objects[i].y = drop->y;
             scene->objects[i].z = drop->z;
+            scene->objects[i].velocity = drop->velocity;
+            scene->objects[i].rain = true;
         } else {
             if (rand() % 100 < 1) {
                 drop->alive = true;
@@ -93,10 +94,12 @@ void rain_step(struct scene * scene, double delta)
                 scene->objects[i].x = drop->x;
                 scene->objects[i].y = drop->y;
                 scene->objects[i].z = drop->z;
+                scene->objects[i].velocity = drop->velocity;
                 scene->objects[i].enabled = true;
                 scene->objects[i].scale = 0.1;
                 scene->objects[i].solid_index = 19;
                 scene->objects[i].outline_index = 20;
+                scene->objects[i].rain = true;
             } else {
                 scene->objects[i].enabled = false;
             }

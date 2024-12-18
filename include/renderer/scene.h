@@ -27,10 +27,12 @@
 struct object {
     bool enabled;
     bool glows;
+    bool rain;
     struct quaternion rotation;
     float cx, cy, cz;
     float x, y, z;
     float scale;
+    float velocity;
     uint32_t solid_index,
              outline_index,
              glow_index;

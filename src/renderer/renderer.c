@@ -199,7 +199,7 @@ struct renderer {
     } push_constants;
 
 } renderer = {
-    .n_objects = 100 * 1048
+    .n_objects = 100 * 1024
 };
 
 static_assert(sizeof(renderer.push_constants) <= 128);
@@ -2736,40 +2736,60 @@ static enum renderer_result update_uniform_buffer(uint32_t image_index)
 
 #pragma omp parallel for
     for (size_t i = 0; i < renderer.scene.n_objects; i++) {
-        struct matrix matrix_translate;
-        struct matrix matrix_rotate;
         struct storage_buffer_object sbo;
 
-        matrix_translation_scale(
-                &sbo.model,
-                renderer.scene.objects[i].x,
-                renderer.scene.objects[i].y,
-                renderer.scene.objects[i].z,
-                renderer.scene.objects[i].scale,
-                renderer.scene.objects[i].scale,
-                renderer.scene.objects[i].scale
-            );
+        if (renderer.scene.objects[i].rain) {
+            sbo.model.matrix[0] = renderer.scene.objects[i].x;
+            sbo.model.matrix[1] = renderer.scene.objects[i].y;
+            sbo.model.matrix[2] = renderer.scene.objects[i].z;
+            sbo.model.matrix[4] = renderer.scene.objects[i].rotation.x;
+            sbo.model.matrix[5] = renderer.scene.objects[i].rotation.y;
+            sbo.model.matrix[6] = renderer.scene.objects[i].rotation.z;
+            sbo.model.matrix[7] = renderer.scene.objects[i].rotation.w;
+            sbo.model.matrix[8] = renderer.scene.objects[i].scale;
+            sbo.model.matrix[9] = renderer.scene.objects[i].velocity;
+            sbo.solid_index = renderer.scene.objects[i].solid_index;
+            sbo.outline_index = renderer.scene.objects[i].outline_index;
+            sbo.glow_index = renderer.scene.objects[i].glow_index;
+            sbo.flags = 0;
+            sbo.flags |= renderer.scene.objects[i].enabled ? 1 : 0;
+            sbo.flags |= renderer.scene.objects[i].glows ? 2 : 0;
+            sbo.flags |= 4;
+        } else {
+            struct matrix matrix_translate;
+            struct matrix matrix_rotate;
 
-        matrix_translation(
-                &matrix_translate,
-                renderer.scene.objects[i].cx,
-                renderer.scene.objects[i].cy,
-                renderer.scene.objects[i].cz
-            );
+            matrix_translation_scale(
+                    &sbo.model,
+                    renderer.scene.objects[i].x,
+                    renderer.scene.objects[i].y,
+                    renderer.scene.objects[i].z,
+                    renderer.scene.objects[i].scale,
+                    renderer.scene.objects[i].scale,
+                    renderer.scene.objects[i].scale
+                );
 
-        quaternion_matrix(
-                &matrix_rotate,
-                &renderer.scene.objects[i].rotation
-            );
+            matrix_translation(
+                    &matrix_translate,
+                    renderer.scene.objects[i].cx,
+                    renderer.scene.objects[i].cy,
+                    renderer.scene.objects[i].cz
+                );
 
-        matrix_multiply(&sbo.model, &sbo.model, &matrix_rotate);
-        matrix_multiply(&sbo.model, &sbo.model, &matrix_translate);
-        sbo.solid_index = renderer.scene.objects[i].solid_index;
-        sbo.outline_index = renderer.scene.objects[i].outline_index;
-        sbo.glow_index = renderer.scene.objects[i].glow_index;
-        sbo.flags = 0;
-        sbo.flags |= renderer.scene.objects[i].enabled ? 1 : 0;
-        sbo.flags |= renderer.scene.objects[i].glows ? 2 : 0;
+            quaternion_matrix(
+                    &matrix_rotate,
+                    &renderer.scene.objects[i].rotation
+                );
+
+            matrix_multiply(&sbo.model, &sbo.model, &matrix_rotate);
+            matrix_multiply(&sbo.model, &sbo.model, &matrix_translate);
+            sbo.solid_index = renderer.scene.objects[i].solid_index;
+            sbo.outline_index = renderer.scene.objects[i].outline_index;
+            sbo.glow_index = renderer.scene.objects[i].glow_index;
+            sbo.flags = 0;
+            sbo.flags |= renderer.scene.objects[i].enabled ? 1 : 0;
+            sbo.flags |= renderer.scene.objects[i].glows ? 2 : 0;
+        }
 
         memcpy(
                 renderer.storage_buffers_mapped[image_index] +
